@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    ОДНА ТЕМА, ЧЁРНАЯ. Светлой больше нет и по умолчанию не подставится:
+    родитель тоже тёмный.
+
+    Фон именно #000000, а не тёмно-серый. На OLED чёрный пиксель просто
+    не горит, и это не оформление, а расход батареи: у приложения,
+    которое человек держит открытым, пока идёт туннель, разница
+    измеримая.
+-->
+<resources>
+    <style name="Theme.Meridian" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@android:color/black</item>
+        <item name="android:colorBackground">@android:color/black</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <!-- Значки строки состояния светлые: фон под ними чёрный. -->
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>
