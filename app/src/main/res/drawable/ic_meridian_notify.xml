@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Значок для строки состояния.
+
+    ТОЛЬКО СИЛУЭТ И ТОЛЬКО БЕЛЫЙ. Система рисует такие значки одним
+    цветом по маске прозрачности: любые цвета из логотипа здесь
+    превратились бы в сплошное пятно. Поэтому сфера тут — контур,
+    меридианы и точки, без заливки.
+
+    24×24 — размер, которого ждёт строка состояния; сфера радиусом 9
+    оставляет положенные поля.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="#FFFFFFFF">
+
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.6"
+        android:fillColor="#00000000"
+        android:pathData="M12,3 a9,9 0 1,0 0,18 a9,9 0 1,0 0,-18z" />
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.1"
+        android:fillColor="#00000000"
+        android:pathData="M12,3 a2.6,9 0 1,0 0,18 a2.6,9 0 1,0 0,-18z" />
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.1"
+        android:fillColor="#00000000"
+        android:pathData="M12,3 a5.6,9 0 1,0 0,18 a5.6,9 0 1,0 0,-18z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M12,1.4 a1.6,1.6 0 1,0 0,3.2 a1.6,1.6 0 1,0 0,-3.2z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M12,19.4 a1.6,1.6 0 1,0 0,3.2 a1.6,1.6 0 1,0 0,-3.2z" />
+</vector>

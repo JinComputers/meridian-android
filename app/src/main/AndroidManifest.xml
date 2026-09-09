@@ -1,0 +1,205 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- ACCESS_NETWORK_STATE: нужен ConnectivityManager для строки
+         диагностики о активной сети. Разрешение обычное, выдаётся
+         при установке, у пользователя ничего не спрашивает. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- RECEIVE_BOOT_COMPLETED: будильники напоминаний живут в системе,
+         но теряются при перезагрузке. Разрешение обычное, у человека
+         ничего не спрашивает. Точный будильник (SCHEDULE_EXACT_ALARM)
+         НЕ берём намеренно: в Play его обосновывают отдельно и дают по
+         сути только будильникам и календарям. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <!--
+        WAKE_LOCK: удержание процессора НА ВРЕМЯ ПОДЪЁМА, не дольше.
+
+        Разрешение обычное, не опасное, у человека ничего не спрашивает.
+
+        Зачем: 27.08 пульс движка показал, что нас останавливают целиком
+        на 2,7-7,1 секунды подряд, стоит свернуть приложение сразу после
+        нажатия. Лестница при этом судит ступени по срокам, которых не
+        было: пауза в полторы секунды растягивается до восьми, окно
+        ожидания эха съедается, и исправная ступень бракуется.
+
+        Держим ТОЛЬКО пока идёт подъём и снимаем в любом исходе. Держать
+        дольше значило бы менять расход батареи ради того, что уже
+        случилось.
+    -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!--
+        Раздел queries: без него с Android 11 приложение видит только
+        себя, и список для раздельного туннелирования оказался бы пуст.
+
+        Спрашиваем именно приложения С ЯРЛЫКОМ ЗАПУСКА, а не берём
+        QUERY_ALL_PACKAGES. Причина не техническая: QUERY_ALL_PACKAGES в
+        Play обосновывают отдельно, и за непринятое обоснование снимают.
+        Здесь разрешение не нужно вовсе.
+
+        Цена: приложения без ярлыка сюда не попадут — службы и часть
+        системных компонентов. Для раздельного туннелирования это почти
+        всегда неважно.
+    -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
+    <application
+        android:allowBackup="true"
+        android:fullBackupContent="@xml/backup_rules"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Meridian">
+
+        <!--
+            screenOrientation="portrait": экран не переворачивается в
+            горизонтальное положение. Приложение вертикальное по
+            построению — планета в центре, органы управления столбиком, —
+            и в ландшафте раскладка только ломается. Блокируем поворот.
+        -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:screenOrientation="portrait">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!--
+            Экран капчи VK. Появляется редко и по своей воле, поэтому
+            singleTask: второго экземпляра поверх первого быть не должно,
+            иначе человек решит капчу в одном окне, а ждать будет другое.
+
+            exported=false: открываем только сами — из приложения или по
+            нажатию на своё же уведомление.
+        -->
+        <activity
+            android:name=".CaptchaActivity"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:screenOrientation="portrait"
+            android:label="Проверка VK" />
+
+        <!--
+            BIND_VPN_SERVICE обязателен: без него система откажется
+            привязывать службу. exported=false при этом не мешает —
+            привязку делает сама система, а не другое приложение.
+
+            foregroundServiceType: с Android 14 тип обязателен для любой
+            службы переднего плана.
+
+            ОТДЕЛЬНОГО ТИПА "vpn" НЕТ — список закрыт и проверен по
+            android.jar из SDK 37: camera, connectedDevice, dataSync,
+            health, location, mediaPlayback, mediaProcessing,
+            mediaProjection, microphone, phoneCall, remoteMessaging,
+            shortService, specialUse, systemExempted.
+
+            НО VPN В ЭТОМ СПИСКЕ НАЗВАН — как одно из семи оснований
+            использовать systemExempted, наравне с Device Owner и
+            приложениями с ролью экстренных служб. Формально это тип
+            «для нас», и прежняя запись здесь, что типа для VPN не
+            существует вовсе, была неполной.
+
+            specialUse ВЫБРАН ОСОЗНАННО, и вот причина.
+
+            У systemExempted проверка идёт ВО ВРЕМЯ РАБОТЫ: не подпадаешь
+            под основание — ForegroundServiceTypeNotAllowedException, то
+            есть падение, а не отказ. Основание сформулировано как
+            «настроен как VPN в системных настройках», и в какой момент
+            система считает это выполненным — после выдачи разрешения или
+            только когда туннель уже поднят, — не сказано нигде.
+
+            А startForeground() мы зовём ПЕРВОЙ строкой подъёма, до
+            establish(). Если система в этот момент нас VPN ещё не
+            считает, приложение будет падать при каждом подключении, и
+            заметнее всего — на первом после чистой установки.
+
+            Падение при каждом подключении хуже придирки на ревью.
+
+            systemExempted ОСТАЁТСЯ ЗАПАСНЫМ ВАРИАНТОМ: если ревью Play
+            придерётся к обоснованию specialUse, менять будем со знанием,
+            что именно не устроило. Проверять тогда в первую очередь
+            первое подключение после чистой установки — там оно упадёт,
+            если упадёт.
+
+            Play требует декларацию для ЛЮБОГО типа и заявляет, что все
+            типы проходят ревью, так что выигрыша по этой части у
+            systemExempted нет.
+        -->
+        <service
+            android:name=".MeridianVpnService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse"
+            android:permission="android.permission.BIND_VPN_SERVICE">
+            <intent-filter>
+                <action android:name="android.net.VpnService" />
+            </intent-filter>
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="vpn" />
+        </service>
+
+        <!--
+            FileProvider для выгрузки лога. Отладочное, убрать перед
+            публикацией вместе с кнопками экспорта.
+
+            exported=false и grantUriPermissions=true: доступ выдаётся
+            разово и только тому приложению, которое человек выбрал в
+            диалоге "Поделиться".
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.logs"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
+        <!--
+            Плитка быстрых настроек: включение/выключение туннеля из
+            шторки. BIND_QUICK_SETTINGS_TILE обязателен — так система
+            подтверждает, что плитку привязывает она, а не чужое
+            приложение. Иконка монохромная, как требует шторка.
+        -->
+        <service
+            android:name=".MeridianTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_meridian_notify"
+            android:label="Meridian VPN"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
+        <!--
+            Приёмник напоминаний о конце триала и восстановления
+            будильников после перезагрузки.
+        -->
+        <receiver
+            android:name=".TrialAlarm$Receiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
+    </application>
+</manifest>

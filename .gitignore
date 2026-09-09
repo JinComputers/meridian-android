@@ -1,0 +1,25 @@
+*.iml
+.gradle
+/local.properties
+/.idea/caches
+/.idea/libraries
+/.idea/modules.xml
+/.idea/workspace.xml
+/.idea/navEditor.xml
+/.idea/assetWizardSettings.xml
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+*.jks
+*.keystore
+keystore.properties
+*.aar
+
+# Второй вывод gomobile: сгенерированная обвязка на Java.
+# Брат engine.aar, и место ему там же — в сборке, а не в репозитории.
+# В первый снимок попал недосмотром, убран из индекса 26.08.
+app/libs/engine-sources.jar
+app/src/main/java/org/meridianvpn/app/Config.kt
