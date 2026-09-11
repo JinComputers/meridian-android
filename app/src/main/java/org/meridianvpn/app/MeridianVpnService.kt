@@ -75,6 +75,19 @@ class MeridianVpnService : VpnService() {
         private const val RECONNECT_MAX_FAILS = 5
 
         /**
+         * Шаг проверки, пока СЕТИ НЕТ ВОВСЕ.
+         *
+         * Отсутствие сети не тратит предел сдачи: подключать нечего, и
+         * ждать тут правильно. 11.09 клиент в метро сдался за 47 секунд
+         * и назад сам не поднялся — перегон длиннее. Возврат сети ловит
+         * onUnderlyingAvailable мгновенно, а этот шаг — подстраховка,
+         * если сеть уже вернулась, а колбэк промолчал. Двадцать секунд:
+         * попытка без сети обрывается за доли секунды, батарее почти
+         * ничего.
+         */
+        private const val NO_NET_POLL_MS = 20_000L
+
+        /**
          * Сессия короче этого — «поднялся и сразу упал».
          *
          * Отдельный класс аварии от неудачного подъёма: тут туннель
@@ -181,6 +194,7 @@ class MeridianVpnService : VpnService() {
         onUnderlyingLost = { net -> onUnderlyingLost(net) },
         onUnderlyingAddrChanged = { net -> onUnderlyingAddrChanged(net) },
         onUnderlyingSuspect = { net -> onUnderlyingSuspect(net) },
+        onUnderlyingAvailable = { net -> onUnderlyingAvailable(net) },
     )
 
     /**
@@ -955,6 +969,15 @@ class MeridianVpnService : VpnService() {
                     // не невозможным: Engine.awaitStopped мог истечь по
                     // сроку, а сессия дожить.
                     TunnelLog.add("сессия уже поднята — службу и движок не трогаю")
+                } else if (noNet) {
+                    // НЕТ СЕТИ — НЕ ОТКАЗ, А ОТСУТСТВИЕ. Счётчик неудач
+                    // НЕ трогаем: перегон метро длиннее, чем те 47
+                    // секунд, за которые копится предел сдачи, и
+                    // считать отсутствие сети провалом — значит не
+                    // подняться самим, когда сеть вернётся. Сам
+                    // scheduleReconnect увидит отсутствие сети и уйдёт в
+                    // ровное ожидание вместо роста паузы.
+                    scheduleReconnect("сети нет")
                 } else if (networkChanged()) {
                     // Сеть ушла из-под ног. Это не отказ пути и не повод
                     // гасить службу даже на первой попытке: сеть уже
@@ -1295,6 +1318,24 @@ class MeridianVpnService : VpnService() {
         sessionNetwork = null
 
         main.post {
+            // НЕТ СЕТИ — ЖДЁМ ЕЁ, А НЕ СДАЁМСЯ.
+            //
+            // Отсутствие сети не отказ туннеля: подключать нечего.
+            // Предел сдачи (пять попыток, ~47 с) заведён против мигающей
+            // сети, а не против перегона метро, где сети нет минутами:
+            // 11.09 из-за него клиент за 47 секунд сдался и назад сам не
+            // поднялся. Поэтому здесь ни счётчик неудач не растёт, ни
+            // предел не проверяется — ждём ровным шагом сколько угодно.
+            // Возврат сети поднимет туннель сразу через
+            // onUnderlyingAvailable; этот шаг — подстраховка на случай,
+            // когда сеть уже вернулась, а колбэк промолчал.
+            if (!hasUsableNetwork()) {
+                quickDrops = 0
+                TunnelLog.add("сети нет — жду возврата, проверю через ${NO_NET_POLL_MS / 1000} с")
+                armReconnect(NO_NET_POLL_MS)
+                return@post
+            }
+
             // «Поднялся и сразу упал» — отдельный предел. Успешный
             // подъём обнулил счётчик неудач, и без этого предела цикл
             // «встал → через 8 с немота → встал» шёл бы молча и вечно.
@@ -1325,12 +1366,54 @@ class MeridianVpnService : VpnService() {
                 RECONNECT_BASE_MS shl minOf(steps - 1, RECONNECT_MAX_SHIFT)
             }
             TunnelLog.add("переподключение через ${delay / 1000} с ($reason)")
-            main.postDelayed({
-                reconnectPending.set(false)
+            armReconnect(delay)
+        }
+    }
+
+    /**
+     * Ставит отложенную попытку и оставляет reconnectPending поднятым
+     * как ЖЕТОН ВЛАДЕНИЯ.
+     *
+     * Жетон снимает тот, кто попытку и запускает: либо этот таймер по
+     * сроку, либо onUnderlyingAvailable, когда сеть вернулась раньше.
+     * Кто первым снял true→false, тот и поднимает; второй видит false и
+     * молчит. Без жетона возврат сети и сработавший таймер подняли бы
+     * два туннеля разом.
+     */
+    private fun armReconnect(delayMs: Long) {
+        main.postDelayed({
+            if (reconnectPending.compareAndSet(true, false)) {
                 if (!shuttingDown.get()) {
                     startTunnel(isReconnect = true)
                 }
-            }, delay)
+            }
+        }, delayMs)
+    }
+
+    /**
+     * Сеть появилась. Если мы её ЖДЁМ — поднимаемся немедленно, не
+     * досиживая шаг таймера.
+     *
+     * Трогаем ровно один случай: туннель не поднят, а переподключение
+     * уже назначено — то есть мы сидим и ждём сеть, которая только что
+     * и пришла. Живой туннель не трогаем: появление ещё одной сети не
+     * повод рвать рабочий путь, переезд на Wi-Fi будет отдельной
+     * задачей.
+     *
+     * Всё на главном потоке — как и остальная работа со счётчиками и
+     * службой. Жетон reconnectPending снимаем тем же compareAndSet, что
+     * и таймер: кто первым, тот и поднимает.
+     */
+    private fun onUnderlyingAvailable(net: Network) {
+        main.post {
+            if (shuttingDown.get()) return@post
+            if (!Access.hasKey()) return@post
+            if (TunnelState.connected.value) return@post
+            if (!hasUsableNetwork()) return@post
+            if (!reconnectPending.compareAndSet(true, false)) return@post
+            TunnelLog.add("сеть вернулась — поднимаюсь сразу, не жду таймер")
+            TunnelLog.event("сеть вернулась")
+            startTunnel(isReconnect = true)
         }
     }
 
