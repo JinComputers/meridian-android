@@ -49,6 +49,15 @@ class NetworkWatch(
      * проверку, а не выносить приговор.
      */
     private val onUnderlyingSuspect: (Network) -> Unit,
+    /**
+     * Появилась сеть, годная для подключения.
+     *
+     * Нужно ровно для одного: когда туннель ждёт возврата сети (перегон
+     * метро кончился), поднять его сразу, не досиживая шаг таймера
+     * переподключения. Живой туннель получатель НЕ трогает — появление
+     * ещё одной сети не повод рвать рабочий путь.
+     */
+    private val onUnderlyingAvailable: (Network) -> Unit,
 ) {
 
     private var cm: ConnectivityManager? = null
@@ -114,6 +123,9 @@ class NetworkWatch(
                     // Переезд на Wi-Fi будет отдельной, осознанной
                     // задачей.
                     TunnelLog.add("СЕТЬ появилась: $name, ${transportOf(network)}")
+                    // Явная квалификация — тот же заслон от переопределения
+                    // имени, что и в onLost ниже.
+                    this@NetworkWatch.onUnderlyingAvailable(network)
                 }
 
                 override fun onLost(network: Network) {
