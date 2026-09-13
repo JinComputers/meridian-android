@@ -37,22 +37,11 @@ fun AccessBlock(
     modifier: Modifier = Modifier,
     onConnect: () -> Unit = {},
 ) {
-    val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     val state = Access.state.value
-    var typing by remember { mutableStateOf(false) }
-    var typed by remember { mutableStateOf("") }
-    /**
-     * Подсказка ПОД БЛОКОМ, не итог.
-     *
-     * Разделение с Notice: здесь живёт только то, что относится к вводу
-     * прямо сейчас — «ключ слишком короткий», «спрашиваю у сервера…».
-     * Итог события — принят ключ, начался период, кончился период —
-     * идёт в Notice, единственную строку состояния под планетой.
-     *
-     * Раньше итог писался в оба места, и человек видел одну и ту же
-     * фразу дважды, разным кеглем.
-     */
+    // note/busy — только для кнопки пробного периода ниже. Покупка и ввод
+    // ключа со своим состоянием уехали в AccessOffer, чтобы жить в двух
+    // местах (главный и настройки), не двоя логику.
     var note by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
 
@@ -77,10 +66,9 @@ fun AccessBlock(
                 ) { Text(if (busy) "Минуту…" else "Начать 3 дня бесплатно") }
             }
 
-            // Остаток пробного периода уехал ВНИЗ НАСТРОЕК (просьба
-            // владельца), как и срок платного ключа (55.3): на главном
-            // экране при активном доступе не держим ничего — планета
-            // показывает состояние сама, а остаток нужен изредка.
+            // Во время активного триала на главном НИЧЕГО: и остаток, и
+            // предложение купить/ввести ключ уехали в настройки (55.3 +
+            // просьба владельца 13.09). Планета показывает состояние сама.
             Access.State.TRIAL -> Unit
 
             Access.State.OVER -> {
@@ -100,103 +88,129 @@ fun AccessBlock(
             Access.State.KEYED -> Unit
         }
 
-        // ПОКУПКА И ВВОД КЛЮЧА — ПОКА КЛЮЧА НЕТ.
+        // ПОКУПКА И ВВОД КЛЮЧА НА ГЛАВНОМ — ТОЛЬКО КОГДА ТРИАЛА НЕТ.
         //
-        // «Всегда» из задачи 61 означало «не только после пробного
-        // периода»: захотеть купить человек может и в первый день. Но я
-        // прочитал его как «во всех состояниях» и вынес оба блока из
-        // when — в том числе для того, у кого ключ уже работает. Он
-        // видел «Купить ключ» и «Уже есть ключ?» сразу после того, как
-        // ключ приняли.
+        // Не начат (NO_TRIAL) или кончился (OVER) — предлагаем здесь. Во
+        // время активного триала предложение живёт в НАСТРОЙКАХ рядом с
+        // остатком (просьба владельца 13.09): главный экран в триале
+        // должен быть чист. Кончится триал — вернётся на главный само,
+        // потому что state сменится на OVER.
         //
-        // Правильное правило одно: пока ключа нет — предлагаем, как
-        // только он есть — молчим. Это верно для обоих вариантов
-        // сборки: в play при действующей подписке Google на кнопку
-        // ответил бы «вы уже подписаны», и предлагать её так же неверно.
-        //
-        // Сама кнопка живёт в разных наборах исходников:
-        //   app/src/direct/.../Purchase.kt — ссылка на бота;
-        //   app/src/play/.../Purchase.kt   — покупка через Play.
-        // Ветвления по флагу здесь нет намеренно: оно оставило бы
-        // строки про внешнюю оплату в сборке для Play, а их видно в dex
-        // обычным grep.
-        if (state != Access.State.KEYED) {
-            PurchaseOffer(onNote = { note = it })
+        // При живом ключе (KEYED) не предлагаем нигде: как только доступ
+        // есть, кнопки молчат — верно и для play, где Google на «купить»
+        // при активной подписке ответил бы «вы уже подписаны».
+        if (state == Access.State.NO_TRIAL || state == Access.State.OVER) {
+            AccessOffer(onConnect = onConnect)
         }
 
-        if (state != Access.State.KEYED) {
-            if (!typing) {
+        if (note.isNotEmpty()) {
+            Text(note, style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
 
-                TextButton(
+/**
+ * Покупка ключа и ввод уже имеющегося — один блок, живущий в ДВУХ местах:
+ * на главном, пока доступа нет (NO_TRIAL/OVER), и в настройках во время
+ * активного триала (просьба владельца 13.09).
+ *
+ * Вынесен отдельным composable намеренно: логика ввода ключа — проверка
+ * вердикта, привязка, подключение — не должна двоиться. Два места с одним
+ * смыслом расходятся, мы это уже проходили.
+ *
+ * Своё состояние (typing/typed/note/busy): у двух вхождений оно
+ * независимо, и это правильно — ввод в настройках и ввод на главном не
+ * связаны.
+ *
+ * Сама кнопка покупки живёт в разных наборах исходников:
+ *   app/src/direct/.../Purchase.kt — ссылка на бота;
+ *   app/src/play/.../Purchase.kt   — покупка через Play.
+ * Ветвления по флагу здесь нет намеренно: оно оставило бы строки про
+ * внешнюю оплату в сборке для Play, а их видно в dex обычным grep.
+ */
+@Composable
+fun AccessOffer(
+    modifier: Modifier = Modifier,
+    onConnect: () -> Unit = {},
+) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var typing by remember { mutableStateOf(false) }
+    var typed by remember { mutableStateOf("") }
+    // Подсказка ПОД БЛОКОМ, не итог: «ключ слишком короткий», «спрашиваю
+    // у сервера…». Итог события идёт в Notice под планетой — иначе одна
+    // фраза видна дважды разным кеглем.
+    var note by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        PurchaseOffer(onNote = { note = it })
+
+        if (!typing) {
+            TextButton(
+                enabled = !busy,
+                onClick = {
+                    // СНАЧАЛА СПРАШИВАЕМ У GOOGLE, потом показываем поле
+                    // ввода. Человек мог поменять телефон и искать, куда
+                    // ввести ключ, — а вводить нечего, доступ оплачен и
+                    // восстановится сам (62.3). В прямой раздаче это
+                    // пустышка: покупок Google там нет, вызов вернёт пусто.
+                    busy = true
+                    scope.launch {
+                        val said = withContext(Dispatchers.IO) { tryRestorePurchase(ctx) }
+                        busy = false
+                        when {
+                            said.isNotEmpty() -> note = said
+                            // ПОЛЕ ВВОДА — ТОЛЬКО ТАМ, ГДЕ КЛЮЧ ЕСТЬ ЧЕМ
+                            // ВЫДАТЬ. Признак задан вариантом сборки.
+                            KEY_ENTRY -> typing = true
+                            else -> note = RECOVER_EMPTY
+                        }
+                    }
+                },
+            ) { Text(if (busy) "Проверяю…" else RECOVER_LABEL) }
+        } else if (KEY_ENTRY) {
+            OutlinedTextField(
+                modifier = Modifier.fillMaxWidth(),
+                value = typed,
+                onValueChange = { typed = it },
+                label = { Text("Ключ") },
+                singleLine = true,
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Button(
+                    modifier = Modifier.weight(1f),
                     enabled = !busy,
                     onClick = {
-                        // СНАЧАЛА СПРАШИВАЕМ У GOOGLE, потом показываем
-                        // поле ввода. Человек мог поменять телефон и
-                        // просто искать, куда ввести ключ, — а вводить
-                        // нечего, доступ уже оплачен и восстановится
-                        // сам (задача 62.3, второй случай).
-                        //
-                        // В варианте прямой раздачи это пустышка: там
-                        // покупок Google нет и быть не может, и вызов
-                        // сразу возвращает пусто.
-                        busy = true
-                        scope.launch {
-                            val said = withContext(Dispatchers.IO) { tryRestorePurchase(ctx) }
-                            busy = false
-                            when {
-                                said.isNotEmpty() -> note = said
-                                // ПОЛЕ ВВОДА — ТОЛЬКО ТАМ, ГДЕ КЛЮЧ ЕСТЬ
-                                // ЧЕМ ВЫДАТЬ. Признак задан вариантом
-                                // сборки, разбор — в обоих Purchase.kt.
-                                // В Play доступ бывает пробным или
-                                // оплаченным через Play, третьего нет.
-                                KEY_ENTRY -> typing = true
-                                else -> note = RECOVER_EMPTY
+                        val k = typed.trim()
+                        if (k.length < 8) {
+                            note = "ключ слишком короткий"
+                        } else {
+                            busy = true
+                            note = "спрашиваю у сервера…"
+                            scope.launch {
+                                val answer = withContext(Dispatchers.IO) { Api.checkKey(k) }
+                                busy = false
+                                note = applyVerdict(answer, k) {
+                                    typed = ""
+                                    typing = false
+                                    onConnect()
+                                }
                             }
                         }
                     },
-                ) { Text(if (busy) "Проверяю…" else RECOVER_LABEL) }
-
-            } else if (KEY_ENTRY) {
-                OutlinedTextField(
-                    modifier = Modifier.fillMaxWidth(),
-                    value = typed,
-                    onValueChange = { typed = it },
-                    label = { Text("Ключ") },
-                    singleLine = true,
-                )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Button(
-                        modifier = Modifier.weight(1f),
-                        enabled = !busy,
-                        onClick = {
-                            val k = typed.trim()
-                            if (k.length < 8) {
-                                note = "ключ слишком короткий"
-                            } else {
-                                busy = true
-                                note = "спрашиваю у сервера…"
-                                scope.launch {
-                                    val answer = withContext(Dispatchers.IO) { Api.checkKey(k) }
-                                    busy = false
-                                    note = applyVerdict(answer, k) {
-                                        typed = ""
-                                        typing = false
-                                        onConnect()
-                                    }
-                                }
-                            }
-                        },
-                    ) { Text(if (busy) "Проверяю…" else "Проверить") }
-                    TextButton(
-                        modifier = Modifier.weight(1f),
-                        enabled = !busy,
-                        onClick = { typing = false; typed = "" },
-                    ) { Text("Отмена") }
-                }
+                ) { Text(if (busy) "Проверяю…" else "Проверить") }
+                TextButton(
+                    modifier = Modifier.weight(1f),
+                    enabled = !busy,
+                    onClick = { typing = false; typed = "" },
+                ) { Text("Отмена") }
             }
         }
 

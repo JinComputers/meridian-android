@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Добавка манифеста ДЛЯ ВАРИАНТА PLAY.
+
+    Всё остальное берётся из app/src/main/AndroidManifest.xml — этот файл
+    только правит его, а не заменяет.
+
+    ЗАЧЕМ. С Android 16 система игнорирует блокировку ориентации на
+    больших экранах (складные, планшеты), и Play рекомендует снять её
+    самим, чтобы раскладка не ломалась. Здесь снимаем portrait-замок с
+    двух экранов, у которых он стоял в общем манифесте.
+
+    ТОЛЬКО В PLAY. В прямой раздаче замок оставляем: там сборку ставят
+    на телефон, и вертикальная раскладка — сознательный выбор
+    (разбор в app/src/main/AndroidManifest.xml). Правку просил владелец
+    именно для Play.
+
+    tools:remove снимает атрибут, оставляя значение по умолчанию
+    (unspecified) — система сама решает по устройству. Это ровно то,
+    чего просит Play: не «разрешить поворот», а «убрать ограничение».
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <application>
+        <activity
+            android:name=".MainActivity"
+            tools:remove="android:screenOrientation" />
+        <activity
+            android:name=".CaptchaActivity"
+            tools:remove="android:screenOrientation" />
+    </application>
+
+</manifest>

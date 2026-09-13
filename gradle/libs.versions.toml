@@ -18,6 +18,10 @@ composeBom = "2026.02.01"
 # enablePendingPurchases в Billing.kt. Мигрировать второй раз через
 # полгода незачем.
 billing = "9.0.0"
+# androidx.fragment. Явно поднят: billing 9.0.0 тянет транзитивно
+# fragment 1.1.0 (2019 г.), и Play ругается на устаревший SDK. Только в
+# варианте play — direct fragment не тянет вовсе.
+fragment = "1.8.6"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -35,6 +39,7 @@ androidx-compose-ui-test-manifest = { group = "androidx.compose.ui", name = "ui-
 androidx-compose-ui-test-junit4 = { group = "androidx.compose.ui", name = "ui-test-junit4" }
 androidx-compose-material3 = { group = "androidx.compose.material3", name = "material3" }
 play-billing = { group = "com.android.billingclient", name = "billing-ktx", version.ref = "billing" }
+androidx-fragment = { group = "androidx.fragment", name = "fragment", version.ref = "fragment" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

@@ -11,7 +11,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
-import androidx.activity.enableEdgeToEdge
+import androidx.core.view.WindowCompat
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -94,7 +94,17 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        enableEdgeToEdge()
+        // ОТОБРАЖЕНИЕ ОТ КРАЯ ДО КРАЯ — ВРУЧНУЮ, БЕЗ enableEdgeToEdge().
+        //
+        // enableEdgeToEdge() внутри зовёт Window.setStatusBarColor и
+        // setNavigationBarColor. С Android 15 (SDK 35) они устарели, и
+        // Play помечает сам вызов в байткоде — даже под guard'ом по
+        // версии он там есть. setDecorFitsSystemWindows этих вызовов не
+        // делает, а прозрачность баров и светлые значки уже заданы темой
+        // (res/values/themes.xml: statusBarColor/navigationBarColor =
+        // transparent, windowLightStatusBar = false). Отступы под бары
+        // раздаёт Scaffold через innerPadding — как и раньше.
+        WindowCompat.setDecorFitsSystemWindows(window, false)
         setContent {
             // ОДНА ТЕМА, ЧЁРНАЯ (51.1). Не тёмно-серая: на OLED чёрный
             // пиксель не горит, и для приложения, открытого пока идёт
@@ -115,6 +125,7 @@ class MainActivity : ComponentActivity() {
                 )
             ) {
                 var screen by remember { mutableStateOf(Screen.TUNNEL) }
+                val ctx = LocalContext.current
 
                 // СИСТЕМНАЯ КНОПКА «НАЗАД».
                 //
@@ -153,6 +164,19 @@ class MainActivity : ComponentActivity() {
                             onLogs = { screen = Screen.LOGS },
                             onSplit = { screen = Screen.SPLIT },
                             onBack = { screen = Screen.TUNNEL },
+                            // Ключ, введённый из настроек во время триала,
+                            // применяется переподъёмом на новом ключе.
+                            // Полную лестницу разрешений здесь не гоняем:
+                            // в активном триале разрешение VPN уже выдано,
+                            // и хватает старта службы — как ветка connect
+                            // без диалога. Первый подъём (с диалогом) всё
+                            // равно шёл через главный экран.
+                            onConnect = {
+                                ctx.startService(
+                                    Intent(ctx, MeridianVpnService::class.java)
+                                        .setAction(MeridianVpnService.ACTION_CONNECT)
+                                )
+                            },
                         )
                         Screen.SPLIT -> SplitScreen(
                             modifier = pad,

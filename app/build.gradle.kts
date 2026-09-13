@@ -248,6 +248,9 @@ dependencies {
     // Заодно снимает вопрос ревью: в direct-сборке нет ни классов
     // биллинга, ни разрешения com.android.vending.BILLING.
     "playImplementation"(libs.play.billing)
+    // Поднимаем устаревший transitive fragment из billing до текущего —
+    // требование Play. playImplementation: в direct его и так нет.
+    "playImplementation"(libs.androidx.fragment)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))
