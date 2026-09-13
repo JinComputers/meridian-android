@@ -33,6 +33,7 @@ fun SettingsScreen(
     onLogs: () -> Unit,
     onSplit: () -> Unit,
     onBack: () -> Unit,
+    onConnect: () -> Unit = {},
 ) {
     Column(
         modifier = modifier.fillMaxSize().padding(16.dp),
@@ -77,9 +78,16 @@ fun SettingsScreen(
         // смотрят на них изредка, а место на главном они занимали
         // всегда. Планета сама показывает, что доступ есть.
         Spacer(modifier = Modifier.weight(1f))
-        val bottomAccess = when (Access.state.value) {
-            Access.State.KEYED -> Access.keyText()
-            Access.State.TRIAL -> "Пробный период: осталось " + Access.leftText()
+        // Пробный период называем пробным, даже когда он пришёл серверным
+        // ключом с датой (тогда state=KEYED): иначе рядом с «Доступ до …»
+        // появляется «Купить», и непонятно, почему предлагают купить уже
+        // выданный доступ. Оплаченный ключ — обычный keyText.
+        val bottomAccess = when {
+            Access.onTrial() && Access.state.value == Access.State.KEYED ->
+                "Пробный период — " + Access.keyText().replaceFirstChar { it.lowercase() }
+            Access.state.value == Access.State.KEYED -> Access.keyText()
+            Access.state.value == Access.State.TRIAL ->
+                "Пробный период: осталось " + Access.leftText()
             else -> ""
         }
         if (bottomAccess.isNotEmpty()) {
@@ -90,6 +98,16 @@ fun SettingsScreen(
                 modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
                 textAlign = TextAlign.Center,
             )
+        }
+
+        // ВО ВРЕМЯ ТРИАЛА — покупка и ввод ключа ЗДЕСЬ, рядом с остатком
+        // (просьба владельца 13.09): дать купить/ввести ключ, не дожидаясь
+        // конца пробного периода. На главном экране в триале их нет; как
+        // только триал кончится, state станет OVER и предложение вернётся
+        // на главный само. В остальных состояниях блок доступа живёт на
+        // главном (AccessBlock), здесь его дублировать не надо.
+        if (Access.onTrial()) {
+            AccessOffer(onConnect = onConnect)
         }
 
         // Отладочные настройки. В релизе и в сборке для Play — пусто, и
