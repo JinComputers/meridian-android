@@ -103,6 +103,27 @@ fun AccessBlock(
             AccessOffer(onConnect = onConnect)
         }
 
+        // ПЕРЕНОС КЛЮЧА ВИДЕН И ПРИ ЖИВОМ КЛЮЧЕ, и это не перестраховка.
+        //
+        // Случай, ради которого ветка заведена: человек купил новый
+        // телефон, и Android перенёс на него настройки вместе с ключом —
+        // так устроено намеренно, см. <device-transfer> в
+        // res/xml/data_extraction_rules.xml. Ключ на месте, состояние
+        // KEYED, а служба говорит «занят другим устройством»: ANDROID_ID
+        // на новом телефоне другой.
+        //
+        // Без этой ветки он упёрся бы в объяснение БЕЗ ДВЕРИ: при KEYED
+        // блок предложения не показывается нигде, а значит и кнопки
+        // переноса внутри него человек не увидит никогда.
+        //
+        // Условие — дополнение к строке выше, а не дубль: там, где
+        // показан AccessOffer, кнопка уже внутри него.
+        if ((state == Access.State.TRIAL || state == Access.State.KEYED) &&
+            Access.rebindable.value.isNotEmpty()
+        ) {
+            TransferKey(onDone = onConnect)
+        }
+
         if (note.isNotEmpty()) {
             Text(note, style = MaterialTheme.typography.bodySmall)
         }
@@ -214,6 +235,14 @@ fun AccessOffer(
             }
         }
 
+        // ПЕРЕНОС КЛЮЧА — ровно там, где человек упёрся в чужую
+        // привязку, и больше нигде. Условие одно и живёт в Access:
+        // сравнивать текст на экране со строкой было бы привязкой к
+        // формулировке, которую завтра поправят.
+        if (Access.rebindable.value.isNotEmpty()) {
+            TransferKey(onDone = { typing = false; typed = ""; onConnect() })
+        }
+
         // Почему ключ перестал годиться. Строка приходит от службы —
         // тем же текстом, что увидят люди на других клиентах.
         val problem = Access.problem.value
@@ -224,6 +253,161 @@ fun AccessOffer(
         if (note.isNotEmpty()) {
             Text(note, style = MaterialTheme.typography.bodySmall)
         }
+    }
+}
+
+/**
+ * Перенос ключа на это устройство.
+ *
+ * Появляется ровно при Bound.OTHER (условие — Access.rebindable) и
+ * больше нигде. Трёх случаев, из-за которых человек сюда попадает, —
+ * другой телефон, сброс к заводским, отладочная сборка против
+ * релизной, — клиент не различает: все три приходят одним вердиктом и
+ * лечатся одной кнопкой.
+ *
+ * ПОДТВЕРЖДЕНИЕ ОБЯЗАТЕЛЬНО, И ЭТО НЕ ВЕЖЛИВОСТЬ. Перенос ТРАТИТ
+ * попытку из годового счёта и УБИВАЕТ прежний ключ. Обе цены человеку
+ * невидимы, пока их не назвать, а нажатие необратимо.
+ *
+ * ЧТО ОБЕЩАЕМ ПРО СТАРЫЙ ТЕЛЕФОН — «при следующем подключении», и
+ * формулировка выстрадана. Сначала обещали «сразу»: шлюз действительно
+ * вытесняет прежнее соединение за миллисекунды. Потом «в течение
+ * нескольких минут»: у шлюза дедлайн пять минут без пакета. Оба неверны
+ * для ротации. Наш же keepalive уходит каждые 20 секунд
+ * (engine/session.go:26), то есть пятиминутный дедлайн при живом
+ * приложении не наступает НИКОГДА, и старый телефон может держать
+ * туннель часами. Врать об этом нельзя: человек проверит и увидит.
+ */
+@Composable
+private fun TransferKey(onDone: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    var confirming by remember { mutableStateOf(false) }
+    var busy by remember { mutableStateOf(false) }
+    var note by remember { mutableStateOf("") }
+    // Попытки кончились — кнопку прячем, а объяснение оставляем. Гасить
+    // её через Access.rebindable нельзя: вместе с кнопкой пропало бы и
+    // «почему», и человек остался бы перед пустым местом.
+    var hidden by remember { mutableStateOf(false) }
+
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        if (!hidden) {
+            if (!confirming) {
+                Button(
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !busy,
+                    onClick = { confirming = true },
+                ) { Text("Перенести на это устройство") }
+            } else {
+                Text(
+                    "Ключ станет новым, а прежний перестанет действовать. " +
+                        "Второй телефон отключится при следующем подключении. " +
+                        "Новый ключ придёт вам в бот.",
+                    color = Brand.text,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Button(
+                        modifier = Modifier.weight(1f),
+                        enabled = !busy,
+                        onClick = {
+                            // Ключ берём из Access, а не из поля ввода:
+                            // сюда попадают оба пути — и ввод руками, и
+                            // перепроверка уже сохранённого.
+                            val k = Access.rebindable.value
+                            busy = true
+                            note = "переношу…"
+                            scope.launch {
+                                val a = withContext(Dispatchers.IO) { Api.unbind(k) }
+                                busy = false
+                                confirming = false
+                                note = applyTransfer(a, onDone) { hidden = true }
+                            }
+                        },
+                    ) { Text(if (busy) "Минуту…" else "Перенести") }
+                    TextButton(
+                        modifier = Modifier.weight(1f),
+                        enabled = !busy,
+                        onClick = { confirming = false },
+                    ) { Text("Отмена") }
+                }
+            }
+        }
+
+        if (note.isNotEmpty()) {
+            Text(note, style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
+
+/**
+ * Что делать с ответом на перенос.
+ *
+ * ПРИЗНАК УСПЕХА — ТОЛЬКО вердикт, и он уже разобран в Api.unbind:
+ * сюда приходит Done и при «перенесли», и при «уже ваш». Ключ в обоих
+ * случаях настоящий и его надо сохранить; отличается только фраза.
+ *
+ * @param onDone   зовётся при успехе — закрыть ввод и подключаться
+ * @param onHidden зовётся, когда кнопку надо убрать навсегда
+ * @return строка для человека
+ */
+private fun applyTransfer(
+    a: Api.UnbindAnswer,
+    onDone: () -> Unit,
+    onHidden: () -> Unit,
+): String = when (a) {
+    is Api.UnbindAnswer.Done -> {
+        // Сохраняем СРАЗУ: человек нажал кнопку и обязан немедленно
+        // увидеть исход. Подтверждение подключением придёт следом — как
+        // и при вводе ключа руками.
+        Access.acceptKey(a.key, a.expiresAt)
+        Notice.say(
+            a.message.ifEmpty {
+                if (a.rotated) "Ключ перенесён на этот телефон"
+                else "Ключ и так ваш"
+            }
+        )
+        onDone()
+        ""
+    }
+
+    is Api.UnbindAnswer.Cooldown ->
+        a.message.ifEmpty { "перенести можно будет " + afterText(a.retryAfter) }
+
+    is Api.UnbindAnswer.Exhausted -> {
+        onHidden()
+        a.message.ifEmpty { "переносы на этот ключ кончились — напишите в поддержку" }
+    }
+
+    is Api.UnbindAnswer.BadKey -> {
+        onHidden()
+        a.message.ifEmpty { "этот ключ больше не действует" }
+    }
+
+    // Молчание службы НЕ отбирает доступ и НЕ хоронит ключ — правило
+    // одно на весь клиент. Кнопку оставляем: повторить можно.
+    is Api.UnbindAnswer.NoAnswer -> "сейчас не получилось (${a.why}) — попробуйте позже"
+}
+
+/**
+ * «через 2 дня», «через 4 ч», «через 15 мин». Для выдержки переноса.
+ *
+ * Своя, а не KeyVerdict.ageText(): та говорит в прошедшем времени
+ * («3 ч назад») и суток не знает вовсе, а выдержка переноса считается
+ * днями.
+ */
+private fun afterText(sec: Int): String {
+    val m = sec / 60
+    return when {
+        m >= 60 * 24 -> "через ${m / (60 * 24)} дн."
+        m >= 60 -> "через ${m / 60} ч"
+        m >= 1 -> "через $m мин"
+        else -> "сейчас"
     }
 }
 
@@ -275,13 +459,14 @@ private fun applyVerdict(answer: Api.KeyAnswer, key: String, connect: () -> Unit
                     return "сервер ответил старыми данными — проверяю подключением"
                 }
 
-                // Один разбор на оба случая — ввод и перепроверку. Шесть
+                // Один разбор на оба случая — ввод и перепроверку. Семь
                 // вердиктов кота 2 объясняются в одном месте, иначе они
                 // рано или поздно объяснятся по-разному.
                 //
-                // Отвязка (/v1/unbind) на сервере ещё не написана,
-                // поэтому кнопки при чужой привязке пока нет — только
-                // объяснение.
+                // Ключ, занятый другим устройством, ЗАПОМИНАЕМ: под него
+                // ниже появится кнопка переноса. Заменённый (ROTATED)
+                // сюда не попадёт — noteRebindable его отсеивает сам.
+                Access.noteRebindable(key, v)
                 return Access.keyProblemText(v)
             }
             // Ключ годен по мнению API. Сохраняем СРАЗУ — человек ввёл
