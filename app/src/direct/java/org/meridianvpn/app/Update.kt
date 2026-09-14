@@ -93,6 +93,7 @@ object Update {
 
     private const val PREFS = "update"
     private const val K_LAST_CHECK = "last_check"
+    private const val K_DISMISSED = "banner_dismissed"
 
     /**
      * Когда проверку ПЫТАЛИСЬ сделать, удачно или нет.
@@ -170,6 +171,45 @@ object Update {
 
     /** Что сказать человеку при неудаче. Короткой строкой. */
     val problem = mutableStateOf("")
+
+    /**
+     * Версия, уведомление о которой человек закрыл на главном экране.
+     *
+     * ЗАКРЫТИЕ ПРИВЯЗАНО К ВЕРСИИ, А НЕ К ФАКТУ. «Больше не показывать»
+     * без имени версии означало бы, что человек, отмахнувшийся один раз,
+     * не узнает и о следующих обновлениях — то есть одно нажатие тихо
+     * отключает оповещение навсегда. Закрыл 0.1.134 — про 0.1.135
+     * скажем снова.
+     *
+     * В настройках строка версии при этом НЕ гаснет: там она и должна
+     * ждать, пока человек сам соберётся (просьба владельца 14.09).
+     */
+    val dismissed = mutableStateOf("")
+
+    /** Человек закрыл уведомление о текущей доступной версии. */
+    fun dismissBanner() {
+        val v = newVersion.value
+        if (v.isEmpty()) return
+        dismissed.value = v
+        appCtx?.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            ?.edit()?.putString(K_DISMISSED, v)?.apply()
+        TunnelLog.add("обновление: уведомление о $v закрыто, в настройках останется")
+    }
+
+    /**
+     * Показывать ли уведомление на главном экране.
+     *
+     * Скачивание и готовность НЕ ПРЯЧУТСЯ закрытием: человек уже нажал
+     * «обновить», и спрятать полосу загрузки после его же нажатия
+     * значило бы потерять единственное место, где видно, чем дело
+     * кончилось.
+     */
+    fun bannerVisible(): Boolean = when (stage.value) {
+        Stage.AVAILABLE -> newVersion.value.isNotEmpty() &&
+            dismissed.value != newVersion.value
+        Stage.DOWNLOADING, Stage.READY -> true
+        else -> false
+    }
 
     private val main = Handler(Looper.getMainLooper())
 
@@ -280,6 +320,14 @@ object Update {
      */
     fun attach(ctx: Context) {
         appCtx = ctx.applicationContext
+        // Закрытое уведомление переживает перезапуск. Иначе «позже»
+        // означало бы «до следующего открытия приложения», то есть
+        // почти ничего.
+        if (dismissed.value.isEmpty()) {
+            dismissed.value = ctx
+                .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .getString(K_DISMISSED, "") ?: ""
+        }
     }
 
     /**
