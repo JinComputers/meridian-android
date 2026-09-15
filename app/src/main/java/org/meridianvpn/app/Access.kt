@@ -99,6 +99,17 @@ object Access {
      */
     val rebindable = mutableStateOf("")
 
+    /**
+     * Есть ли у переносимого ключа путь восстановления (Api.recoverable).
+     * null — служба не сказала, говорим осторожнее.
+     *
+     * Живёт рядом с rebindable и заполняется вместе с ним: подтверждение
+     * переноса должно знать это ДО нажатия, а не после. Нажатие
+     * необратимо и тратит попытку из четырёх за год — узнать цену
+     * постфактум значит узнать её поздно.
+     */
+    val rebindRecoverable = mutableStateOf<Boolean?>(null)
+
     /** Сколько осталось триала, миллисекунды. 0 вне состояния TRIAL. */
     val leftMs = mutableStateOf(0L)
 
@@ -148,7 +159,8 @@ object Access {
     /**
      * Ключ получен из /v1/trial, а не введён человеком.
      *
-     * Нужно ровно для одной строки на экране. Через 72 часа сервер     * пометит пробный ключ деактивированным, и общий текст сказал бы
+     * Нужно ровно для одной строки на экране. Через 72 часа сервер
+     * пометит пробный ключ деактивированным, и общий текст сказал бы
      * «ключ отключён — напишите в поддержку». Для пробного это неправда
      * и вредный совет: он не отключён, он ЗАКОНЧИЛСЯ, и в поддержку
      * идти незачем.
@@ -242,6 +254,11 @@ object Access {
         // появилась, потому что ключ проверяли незадолго до того.
         if (p.getBoolean(K_KEY_BOUND_OTHER, false) && key.isNotEmpty()) {
             rebindable.value = key
+            rebindRecoverable.value = when (p.getInt(K_KEY_RECOVERABLE, -1)) {
+                1 -> true
+                0 -> false
+                else -> null
+            }
         }
 
         val device = deviceId(ctx)
@@ -1046,13 +1063,23 @@ object Access {
             v.bound == Api.Bound.OTHER &&
             v.state != Api.KeyState.ROTATED
         rebindable.value = if (other) k else ""
+        rebindRecoverable.value = if (other) v.recoverable else null
         // Сохраняем ТОЛЬКО для своего ключа. Ключ, набранный в поле и
         // ещё не принятый, сохранять нельзя по тому же правилу, по
         // которому не сохраняется pending: опечатка пережила бы
         // перезапуск и звала бы переносить несуществующее.
         if (k == key) {
             prefs(appCtx ?: return)?.edit()
-                ?.putBoolean(K_KEY_BOUND_OTHER, other)?.apply()
+                ?.putBoolean(K_KEY_BOUND_OTHER, other)
+                // Три состояния в одном числе: -1 не знаем, 0 нет, 1 да.
+                // Отдельным булевым полем их не выразить, а заводить два
+                // ключа настроек ради одного признака — хуже.
+                ?.putInt(K_KEY_RECOVERABLE, if (!other) -1 else when (v.recoverable) {
+                    true -> 1
+                    false -> 0
+                    null -> -1
+                })
+                ?.apply()
         }
     }
 
@@ -1270,6 +1297,7 @@ object Access {
      * комментарий: выглядит это аккуратнее, а ломает оплату через Play.
      */
     private const val K_KEY_BOUND_OTHER = "access_key_bound_other"
+    private const val K_KEY_RECOVERABLE = "access_key_recoverable"
     private const val K_KEY_CHECKED = "access_key_checked"
     private const val K_KEY_EXPIRES = "access_key_expires"
     private const val K_KEY_ASKED_AT = "access_key_asked_at"

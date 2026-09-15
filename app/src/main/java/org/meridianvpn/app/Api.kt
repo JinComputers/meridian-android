@@ -147,6 +147,29 @@ object Api {
 
         /** Готовый текст от службы. Пусто — скажем своими словами. */
         val message: String,
+
+        /**
+         * Можно ли восстановить этот ключ, если приложение его потеряет.
+         *
+         * true  — у ключа есть владелец в Telegram: бот покажет
+         *         актуальный ключ кнопкой, и туда же придёт новый после
+         *         переноса;
+         * false — такой связки нет. После переноса новый ключ окажется
+         *         только у приложения;
+         * null  — служба поля не прислала.
+         *
+         * ТРИ СОСТОЯНИЯ, А НЕ ДВА, И ЭТО НЕ ПЕДАНТИЗМ. Поле появилось
+         * 14.09 и до выката службы не приходит вовсе. Прочитать его
+         * отсутствие как false значило бы объявить невосстановимыми
+         * ВСЕХ — включая 45 человек, у которых с привязкой всё в
+         * порядке, — и пугать их на ровном месте. Отсутствие означает
+         * «не знаю», и говорим мы тогда осторожнее, а не страшнее.
+         *
+         * Само поле, когда придёт, присутствует всегда, включая отказы
+         * (уговор про нули). При bad_key оно false и не читается: там
+         * восстанавливать нечего.
+         */
+        val recoverable: Boolean?,
     ) {
         /** Годен ли ключ к употреблению прямо сейчас. */
         fun usable(): Boolean = state == KeyState.ACTIVE && bound != Bound.OTHER
@@ -256,6 +279,16 @@ object Api {
      * В обоих мы честно говорим «срок неизвестен» вместо «бессрочный».
      */
     const val UNKNOWN_EXPIRY = -1L
+
+    /**
+     * Читает recoverable, различая «не прислали» и «прислали false».
+     *
+     * Отдельная функция, а не optBoolean по месту: читается она в двух
+     * ответах (/v1/key и /v1/unbind), и разойтись этим двум чтениям
+     * нельзя — одно сказало бы «не знаю», другое «нет».
+     */
+    private fun readRecoverable(body: org.json.JSONObject): Boolean? =
+        if (body.has("recoverable")) body.optBoolean("recoverable", false) else null
 
     /** То же чтение срока, но доступное соседям: им нужна та же логика. */
     fun readExpiresPublic(body: org.json.JSONObject): Long = readExpires(body)
@@ -382,6 +415,7 @@ object Api {
                     stale = r.body.optBoolean("stale", false),
                     staleAge = r.body.optLong("stale_age", 0L),
                     message = r.body.optString("message"),
+                    recoverable = readRecoverable(r.body),
                 )
                 // Сам ключ в лог не пишем никогда — это пароль подключения.
                 TunnelLog.add("API: ключ — $state, привязка $bound")
@@ -551,6 +585,8 @@ object Api {
             val rotated: Boolean,
             val attemptsLeft: Int,
             val message: String,
+            /** Есть ли у нового ключа путь восстановления. null — служба не сказала. */
+            val recoverable: Boolean?,
         ) : UnbindAnswer()
 
         /** Отказ по выдержке. `retryAfter` — секунды, всегда > 0. */
@@ -608,7 +644,16 @@ object Api {
                 val left = r.body.optInt("attempts_left", 0)
                 val msg = r.body.optString("message")
                 // Сам ключ в лог не пишем никогда — это пароль подключения.
-                TunnelLog.add("перенос ключа: $verdict, попыток осталось $left")
+                // ЧИСЛО ПОПЫТОК ПИШЕМ НЕ ВСЕГДА, и это не мелочь для
+                // того, кто будет читать лог через месяц. При bad_key
+                // служба тоже присылает attempts_left — но это «сколько
+                // было бы у ключа», а не свойство отказа (предупреждение
+                // кота 2 от 14.09). Напечатать его рядом с «ключа нет»
+                // значит намекнуть, что ключ всё-таки есть.
+                TunnelLog.add(
+                    "перенос ключа: $verdict" +
+                        if (verdict == "bad_key") "" else ", попыток осталось $left"
+                )
 
                 when (verdict) {
                     "rotated", "already" -> {
@@ -628,6 +673,7 @@ object Api {
                             rotated = verdict == "rotated",
                             attemptsLeft = left,
                             message = msg,
+                            recoverable = readRecoverable(r.body),
                         )
                     }
 
