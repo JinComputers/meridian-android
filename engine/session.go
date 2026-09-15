@@ -2122,6 +2122,14 @@ func (s *session) stop(reason string) {
 	s.stopped = true
 	s.mu.Unlock()
 
+	// ПЕРВОЙ СТРОКОЙ, ДО ЗАКРЫТИЯ TUN НИЖЕ. Разбор — у OnStopping в
+	// engine.go: только так замена интерфейса на стороне Kotlin
+	// проходит АТОМАРНО, без окна без защиты. Флаг s.stopped выше уже
+	// сделал этот путь одноразовым — второй звонок сюда не попадёт.
+	if s.listener != nil {
+		s.listener.OnStopping(reason)
+	}
+
 	// Числа переживают сессию: приложение спросит их после остановки,
 	// когда самой сессии уже нет. См. LastTx/LastRx в engine.go.
 	lastTx.Store(s.txCount.Load())
