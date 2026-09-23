@@ -195,7 +195,14 @@ func (s *session) raiseRelay(
 
 	s.logf("%s: аллокация получена, адрес на релее %s", c.name, alloc.LocalAddr())
 
-	raddr, err := net.ResolveUDPAddr("udp4", net.JoinHostPort(gateway, strconv.Itoa(int(c.port))))
+	// Конечный адрес релея: свой у ступени (relay.target из /v1/params,
+	// Ladder.SetRelayTarget), иначе общий gateway — как у прямых ступеней.
+	host, hostFrom := c.host, "relay.target"
+	if host == "" {
+		host, hostFrom = gateway, "адрес шлюза"
+	}
+	s.logf("%s: конечный адрес релея %s (%s)", c.name, host, hostFrom)
+	raddr, err := net.ResolveUDPAddr("udp4", net.JoinHostPort(host, strconv.Itoa(int(c.port))))
 	if err != nil {
 		alloc.Close()
 		client.Close()

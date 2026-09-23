@@ -1,5 +1,7 @@
 package engine
 
+import "net"
+
 // transportKind — каким транспортом идёт ПРЯМАЯ ступень.
 //
 // Заведено под ступени 3-4 (спецификация кота 2, 31.08): на сетях, где
@@ -245,7 +247,36 @@ func (l *Ladder) AddDirectRemembered(name, host string, port int32, useDTLS bool
 	})
 }
 
-// AddRelay добавляет релейную ступень.
+// SetRelayTarget задаёт конечный адрес релея из поля relay.target ответа
+// /v1/params (решение владельца: релей ведёт прямо на Париж, а не на адрес
+// из edge). Зовётся ПОСЛЕ AddRelay.
+//
+// Каждая релейная ступень раздваивается: сначала копия с этим адресом,
+// следом прежняя (host пуст — адрес шлюза из Connect, то есть edge). Релейные
+// ступени идут последовательно, поэтому вторая — откат, если релей на target
+// не поднялся. Порт остаётся прежним (56005).
+//
+// Значение — только IPv4-литерал без порта. Иное (имя, приватный адрес,
+// мусор) не принимается: возвращает false, лестница не меняется.
+func (l *Ladder) SetRelayTarget(host string) bool {
+	ip := net.ParseIP(host)
+	if ip == nil || ip.To4() == nil || isPrivateOrSpecial(host) {
+		return false
+	}
+	out := make([]candidate, 0, len(l.items)+1)
+	for _, c := range l.items {
+		if c.isRelay && c.host == "" {
+			via := c
+			via.host = host
+			out = append(out, via)
+		}
+		out = append(out, c)
+	}
+	l.items = out
+	return true
+}
+
+// AddRelayдобавляет релейную ступень.
 //
 // Кредов на входе НЕТ: они добываются цепочкой vkcalls из хешей,
 // добавленных через AddRelayHash. turnAddrBackup — запасной адрес
