@@ -2,7 +2,9 @@ package engine
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"github.com/pion/stun/v3"
@@ -1321,8 +1323,15 @@ func (s *session) authRung(r *rung, password, deviceID string, budget time.Durat
 		slots = s.wantSlots
 	}
 
+	// НУЖЕН LИ NOISE NK — документ Кота1, раздел 3: TLS-поток уже защищён
+	// своей пиновкой (tlspin.go), DTLS-путь только что проверен отпечатком
+	// выше (dialDTLS). Все остальные — прямой UDP без DTLS, релей через VK
+	// (тоже UDP без DTLS), TCP-поток без TLS — идут голым текстом и
+	// нуждаются в NK.
+	needsNK := r.cand.transport != transTLS && !r.cand.useDTLS
+
 	addr, err := s.auth(r.link, r.pc, password, deviceID, budget,
-		authCaps(slots, s.sessionGen))
+		authCaps(slots, s.sessionGen), needsNK)
 	if err != nil {
 		r.close()
 		return "", err
@@ -1412,14 +1421,70 @@ func (s *session) dialDTLS(
 		return nil, fmt.Errorf("рукопожатие DTLS: %w", err)
 	}
 	s.logf("%s: рукопожатие прошло", c.name)
+
+	// ПРОВЕРКА ПОДЛИННОСТИ ШЛЮЗА ДО ПАРОЛЯ (документ Кота1,
+	// MOBILNYJ-KLIENT-PROTOKOL.md, e6afeb4, раздел 3.2). Сертификат
+	// самоподписанный (см. InsecureSkipVerify выше — цепочки доверия для
+	// него нет и не будет), поэтому подлинность держится не на PKI, а на
+	// совпадении с зашитым отпечатком. Сертификат шлюза постоянный, тот же
+	// используется и для TCP-TLS (nknoise.go).
+	state, ok := conn.ConnectionState()
+	if !ok || len(state.PeerCertificates) == 0 {
+		conn.Close()
+		return nil, errGatewayNotAuthentic
+	}
+	sum := sha256.Sum256(state.PeerCertificates[0])
+	if hex.EncodeToString(sum[:]) != gatewayDTLSFingerprint {
+		conn.Close()
+		return nil, errGatewayNotAuthentic
+	}
+	s.logf("%s: отпечаток шлюза подтверждён", c.name)
 	return conn, nil
 }
 
 // auth проходит AUTH и разбирает ответ шлюза.
+//
+// needsNK — нужно ли ЗАВЕРНУТЬ обмен в Noise NK (документ Кота1, раздел 3.1)
+// перед отправкой пароля: да для прямого UDP без DTLS, релея и TCP-потока;
+// нет для DTLS (отпечаток уже проверен в dialDTLS) и TLS-потока (свой пин,
+// tlspin.go). Разбор ответа "OK|.../FATAL_..." НЕ меняется вообще — меняется
+// только то, что расшифровывается перед тем, как в него попасть.
 func (s *session) auth(
 	link packetLink, udp net.PacketConn, password, deviceID string,
-	budget time.Duration, caps string,
+	budget time.Duration, caps string, needsNK bool,
 ) (string, error) {
+	var nkSend, nkRecv *cipherState
+
+	if needsNK {
+		ni, err := newNKInitiator(gatewayStaticPublicKey)
+		if err != nil {
+			return "", fmt.Errorf("Noise NK: %w", err)
+		}
+		msg1, err := ni.writeMsg1([]byte{nkProtocolVersion})
+		if err != nil {
+			return "", fmt.Errorf("Noise NK, сборка msg1: %w", err)
+		}
+		_ = link.SetWriteDeadline(time.Now().Add(budget))
+		if _, err := link.Write(msg1); err != nil {
+			return "", fmt.Errorf("отправка msg1: %w", err)
+		}
+		buf := make([]byte, 2048)
+		_ = link.SetReadDeadline(time.Now().Add(budget))
+		n, err := link.Read(buf)
+		if err != nil {
+			// Тишина в ответ на msg1 — тот же исход, что и провал
+			// отпечатка на DTLS: подлинность не подтверждена, пароль
+			// не уходит вовсе (см. errGatewayNotAuthentic).
+			return "", errGatewayNotAuthentic
+		}
+		if _, err := ni.readMsg2(buf[:n]); err != nil {
+			return "", errGatewayNotAuthentic
+		}
+		send, recv := ni.split()
+		nkSend, nkRecv = &send, &recv
+		s.logf("проверка подлинности шлюза (Noise NK) пройдена")
+	}
+
 	// AUTH|<пароль>|<устройство>|<возможности>
 	// Пароль в лог не попадает никогда. Возможности — попадают: там нет
 	// ничего тайного, а видеть, ушёл ли multi с поколением, надо.
@@ -1437,7 +1502,15 @@ func (s *session) auth(
 		_ = udp.SetDeadline(time.Now().Add(budget + deadlineSlack))
 	}
 	_ = link.SetWriteDeadline(time.Now().Add(budget))
-	if _, err := link.Write([]byte(authMsg)); err != nil {
+	wireMsg := []byte(authMsg)
+	if nkSend != nil {
+		enc, err := nkSend.encrypt(nil, wireMsg)
+		if err != nil {
+			return "", fmt.Errorf("шифрование AUTH (Noise NK): %w", err)
+		}
+		wireMsg = enc
+	}
+	if _, err := link.Write(wireMsg); err != nil {
 		return "", fmt.Errorf("отправка AUTH: %w", err)
 	}
 	s.logf("AUTH отправлен, жду ответ")
@@ -1483,7 +1556,23 @@ func (s *session) auth(
 			}
 			return "", fmt.Errorf("%w: %v", errAuthSilent, err)
 		}
-		cand := string(buf[:n])
+		raw := buf[:n]
+		var cand string
+		if nkRecv != nil {
+			pt, err := nkRecv.decrypt(nil, raw)
+			if err != nil {
+				// Не расшифровалось — тем же способом, что и "не похоже
+				// на ответ" в открытом виде ниже: пропускаем, читаем
+				// дальше. Чаще всего это тот же встречный пакет прошлой
+				// сессии, что описан выше, только теперь он не пройдёт
+				// AEAD и не притворится ответом случайно.
+				skipped++
+				continue
+			}
+			cand = string(pt)
+		} else {
+			cand = string(raw)
+		}
 		if strings.HasPrefix(cand, "OK|") || strings.HasPrefix(cand, "FATAL_") {
 			resp = cand
 			break
@@ -1988,8 +2077,10 @@ func (s *session) probeAuthNow(c candidate) {
 	defer r.close()
 
 	// caps ровно "echo", как у обычной прямой ступени: профиль на
-	// проводе не должен отличаться от боевого ни на байт.
-	if _, err := s.auth(r.link, r.pc, s.password, s.deviceID, probeAuthBudget, "echo"); err != nil {
+	// проводе не должен отличаться от боевого ни на байт — в том числе
+	// нужен ли Noise NK, тем же условием, что и в authRung.
+	needsNK := c.transport != transTLS && !c.useDTLS
+	if _, err := s.auth(r.link, r.pc, s.password, s.deviceID, probeAuthBudget, "echo", needsNK); err != nil {
 		s.logf("КОНТРОЛЬНЫЙ AUTH НЕ ПРОШЁЛ (%v) — "+
 			"до шлюза не доходит ничего, дело НЕ в этом соединении", err)
 		return
