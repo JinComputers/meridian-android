@@ -79,6 +79,19 @@ object PathMemory {
     private const val MUTE_SUFFIX = "#muteStreak"
 
     /**
+     * Немота ПРЯМОГО пути — отдельно от немоты потока (MUTE_SUFFIX) и от
+     * проигрыша гонки (STREAK_SUFFIX).
+     *
+     * Разбор в MeridianVpnService: прямой UDP поднимается и работает, а
+     * через 10-40 минут немеет — оператор переназначил NAT-адрес посреди
+     * сессии, шлюз (различает клиентов по адресу-источнику) перестал
+     * узнавать. До 12.09 этот случай не копился НИГДЕ: STREAK_SUFFIX
+     * растёт только когда прямой не смог ПОДНЯТЬСЯ, а тут он поднимается
+     * прекрасно и умирает потом. Нужен свой счётчик, как у потока.
+     */
+    private const val DIRECT_MUTE_SUFFIX = "#dirMuteStreak"
+
+    /**
      * Ключ сети: транспорт плюс что-то, отличающее одну сеть от другой.
      *
      * Для мобильной — имя оператора (разрешений не требует), для Wi-Fi —
@@ -214,6 +227,44 @@ object PathMemory {
         val n = relayStreak(ctx, key)
         return n >= skipAfter && n % probeEvery == 0
     }
+
+    // --- НЕМОТА ПРЯМОГО ПУТИ (зеркало немоты потока) ---
+
+    /** Сколько раз подряд прямой UDP на этой сети поднялся и онемел. */
+    fun directMuteStreak(ctx: Context, key: String): Int =
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getInt(key + DIRECT_MUTE_SUFFIX, 0)
+
+    /** Ещё один немой прямой — счётчик вверх. Переживает forget(). */
+    fun noteDirectMute(ctx: Context, key: String) {
+        val n = directMuteStreak(ctx, key) + 1
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putInt(key + DIRECT_MUTE_SUFFIX, n).apply()
+    }
+
+    /**
+     * Счётчик в ноль. Зовём, когда прямой отработал и НЕ онемел, — и
+     * когда на пропуске прямого не встал даже релей: значит стратегия
+     * «мимо прямого» не работает, в следующий раз пробуем всё заново.
+     */
+    fun clearDirectMute(ctx: Context, key: String) {
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().remove(key + DIRECT_MUTE_SUFFIX).apply()
+    }
+
+    /**
+     * Пропускать ли прямой из-за НЕМОТЫ на этой сети СЕЙЧАС.
+     *
+     * Устроено ровно как skipStreams: порог плюс пробный заход раз в
+     * probeEvery попыток, чтобы заметить сеть, где прямой снова ожил.
+     */
+    fun skipDirectMute(ctx: Context, key: String, skipAfter: Int, probeEvery: Int): Boolean {
+        val n = directMuteStreak(ctx, key)
+        return n >= skipAfter && n % probeEvery != 0
+    }
+
+    // probingDirectMute убрана: проба немого прямого теперь на свежем
+    // подключении (clearDirectMute в startTunnel), а не по модулю
+    // счётчика — тот в пропуске не растёт, и модуль бы не сработал.
 
     /** "192.168.1.0/24" из адреса и длины префикса. */
     private fun subnetOf(addr: ByteArray, prefix: Int): String {

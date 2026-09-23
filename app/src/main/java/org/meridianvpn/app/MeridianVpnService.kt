@@ -135,6 +135,35 @@ class MeridianVpnService : VpnService() {
         private const val REASON_MUTE = "обратного трафика нет"
 
         /**
+         * Вторая немота движка: канал МОЛЧАЛ 90 секунд на живом, уже
+         * подтверждённом эхом туннеле (session.go, rxSilenceLimit).
+         *
+         * Отличается от REASON_MUTE тем, ЧТО умерло. REASON_MUTE — так и
+         * не пришёл ПЕРВЫЙ встречный пакет (8 с). Здесь трафик шёл, а
+         * потом оборвался: оператор переназначил NAT-адрес посреди
+         * сессии, шлюз перестал узнавать. До 12.09 этот случай не
+         * учитывался в памяти путей вовсе — строка причины сюда просто
+         * не доходила, и клиент вечно возвращался на тот же прямой.
+         */
+        private const val REASON_SILENCE = "канал молчит"
+
+        /**
+         * После скольких немых ПРЯМЫХ подряд идём мимо прямого на релей.
+         *
+         * ОДИН, а не два. Немота прямого дороже немоты потока: поток
+         * гаснет за 8 с (muteLimit), а прямой держит 90 с (rxSilenceLimit)
+         * прежде чем сторож объявит канал мёртвым. Одна такая немота —
+         * это уже полторы минуты без связи, и ждать второй, чтобы
+         * «убедиться», значит подарить оператору ещё один такой обрыв.
+         * Поднялся, понёс трафик, умер посреди сессии — толкование одно.
+         *
+         * Не навсегда: свежее подключение сбрасывает счётчик и пробует
+         * прямой заново (см. clearDirectMute в startTunnel). Сеть, где
+         * прямой ожил, так и заметится.
+         */
+        private const val DIRECT_MUTE_SKIP_AFTER = 1
+
+        /**
          * После скольких немых потоков подряд идём мимо потока — сразу
          * на релей. Разбор порога — в PathMemory.MUTE_SUFFIX.
          *
@@ -821,7 +850,7 @@ class MeridianVpnService : VpnService() {
                         // запомненная ступень снова уведёт в ту же
                         // немоту без гонки. Тот же разбор, что в
                         // shutdownService().
-                        if (reason == REASON_MUTE) forgetMutePath()
+                        if (reason == REASON_MUTE || reason == REASON_SILENCE) forgetMutePath()
 
                         // Движок уже остановился сам — мы в его колбэке,
                         // Engine.stop() отсюда звать нельзя.
@@ -861,6 +890,21 @@ class MeridianVpnService : VpnService() {
                 // сетью станет сам туннель, и ключ получился бы не тот.
                 val netKey = PathMemory.networkKey(this)
                 val knownId = PathMemory.remembered(this, netKey)
+
+                // СВЕЖЕЕ ПОДКЛЮЧЕНИЕ ПРОБУЕТ ПРЯМОЙ ЗАНОВО.
+                //
+                // Счётчик немоты прямого сбрасываем ТОЛЬКО здесь и
+                // только на свежем старте (не переподключении): человек
+                // открыл приложение сам — самое время проверить, не ожил
+                // ли прямой на этой сети. Внутри одной сессии счётчик
+                // держится, и после немоты лестница идёт мимо прямого на
+                // релей до следующего свежего старта. Это и есть честная
+                // повторная проба вместо сломанного пробного захода по
+                // модулю (тот не срабатывал: счётчик немоты не растёт,
+                // пока прямой пропущен).
+                if (!isReconnect) {
+                    PathMemory.clearDirectMute(this, netKey)
+                }
 
                 // ПАРАМЕТРЫ СПРАШИВАЕМ ДО ПОСТРОЕНИЯ ЛЕСТНИЦЫ — повод 1,
                 // вышел срок. Мы на фоновом потоке, звать можно прямо
@@ -914,9 +958,23 @@ class MeridianVpnService : VpnService() {
 
                 val relayReady = TransportSetting.mode.value == Config.TransportMode.AUTO &&
                     Params.relayEnabled() && HashStore.usable().isNotEmpty()
-                val skipDirect = relayReady &&
+                // Две причины идти мимо прямого, и они РАЗНЫЕ. Гонку
+                // прямой проигрывает, когда не может ПОДНЯТЬСЯ (skipDirectRace).
+                // Немоту он зарабатывает, когда поднялся и умер посреди
+                // сессии (skipDirectMute) — это и есть беда жены 12.09.
+                // До сегодня учитывалась только первая.
+                val skipDirectRace = relayReady &&
                     PathMemory.skipDirect(this, netKey, skipAfter, probeEvery)
-                if (skipDirect) {
+                val skipDirectMute = relayReady &&
+                    PathMemory.skipDirectMute(this, netKey, DIRECT_MUTE_SKIP_AFTER, probeEvery)
+                val skipDirect = skipDirectRace || skipDirectMute
+                if (skipDirectMute) {
+                    TunnelLog.add(
+                        "прямой UDP на этой сети немеет " +
+                            "(${PathMemory.directMuteStreak(this, netKey)}) — мимо UDP, на релей"
+                    )
+                    TunnelLog.event("прямой на этой сети немеет — иду на релей")
+                } else if (skipDirectRace) {
                     TunnelLog.add(
                         "прямой UDP на этой сети подряд не держится " +
                             "(${PathMemory.relayStreak(this, netKey)}) — мимо UDP, на поток и релей"
@@ -924,6 +982,12 @@ class MeridianVpnService : VpnService() {
                 } else if (relayReady &&
                     PathMemory.probingDirect(this, netKey, skipAfter, probeEvery)
                 ) {
+                    // Проба относится к ПРОИГРЫШУ ГОНКИ (relayStreak): тот
+                    // счётчик растёт на каждом релейном заходе и по модулю
+                    // сам щупает прямой. У немоты повторная проба другая —
+                    // свежее подключение (clearDirectMute выше), потому
+                    // что счётчик немоты в пропуске не растёт и модуль бы
+                    // не сработал.
                     TunnelLog.add("проверяю, не открылся ли прямой путь на этой сети")
                 }
 
@@ -985,7 +1049,10 @@ class MeridianVpnService : VpnService() {
                     // в следующий раз пробуем всё заново. Смену сети
                     // сюда не считаем: виноват канал, а не выбор пути.
                     if (skipDirect && !networkChanged()) {
-                        PathMemory.clearRelayStreak(this, netKey)
+                        // Снимаем ровно ту метку, что и завела пропуск:
+                        // иначе одна причина стёрла бы улику другой.
+                        if (skipDirectRace) PathMemory.clearRelayStreak(this, netKey)
+                        if (skipDirectMute) PathMemory.clearDirectMute(this, netKey)
                         TunnelLog.add("релей тоже не поднялся — пропуск прямого снят")
                     }
 
@@ -1464,8 +1531,15 @@ class MeridianVpnService : VpnService() {
         val key = rememberedFor ?: return
         rememberedFor = null
         PathMemory.forget(this, key)
-        TunnelLog.add("путь поднялся, но не понёс трафика — забываю его для этой сети")
-        TunnelLog.event("путь не понёс трафик — выбираю заново")
+        // Прямой UDP онемел — засчитываем для этой сети. forget() выше
+        // снял только запомненного кандидата и счётчик гонки; этот
+        // счётчик у него свой (DIRECT_MUTE_SUFFIX) и переживает forget.
+        // После порога DIRECT_MUTE_SKIP_AFTER лестница пойдёт мимо
+        // прямого на релей.
+        PathMemory.noteDirectMute(this, key)
+        val n = PathMemory.directMuteStreak(this, key)
+        TunnelLog.add("прямой UDP онемел — засчитано ($n) для этой сети")
+        TunnelLog.event("путь онемел — выбираю заново")
     }
 
     private fun networkChanged(): Boolean {
@@ -1761,14 +1835,24 @@ class MeridianVpnService : VpnService() {
         // оставляет. Условие tx > 0 && rx == 0 осталось вторым рубежом
         // на случай, когда сессия оборвалась раньше, чем сторож успел
         // сказать своё слово.
-        if (lastStopReason == REASON_MUTE || (tx > 0L && rx == 0L)) {
+        if (lastStopReason == REASON_MUTE || lastStopReason == REASON_SILENCE ||
+            (tx > 0L && rx == 0L)
+        ) {
             forgetMutePath()
         } else if (rx > 0L) {
-            // ПОТОК ОТРАБОТАЛ И ПОНЁС ТРАФИК — счётчик немоты в ноль.
-            // Сеть, где поток вчера резали, сегодня может его пускать, и
+            // ПУТЬ ОТРАБОТАЛ И ПОНЁС ТРАФИК — счётчик немоты в ноль.
+            // Сеть, где путь вчера резали, сегодня может его пускать, и
             // копить промахи вечно значило бы уходить на релей на сети,
-            // где поток давно ожил.
+            // где всё давно ожило. Поток — по streamWonFor, прямой — по
+            // rememberedFor (он ещё не обнулён, это ниже).
             streamWonFor?.let { PathMemory.clearStreamMute(this, it) }
+            // Немоту ПРЯМОГО здесь НЕ сбрасываем. Для потока «понёс
+            // трафик» = здоров: он гаснет за 8 с, любой трафик значит,
+            // что не режут. Прямой же немеет ПОСЛЕ того, как понёс много
+            // трафика (у жены 80 КБ/212 КБ, потом смерть), так что «понёс
+            // трафик» здоровьем прямого не является. Счётчик снимает
+            // только свежее подключение (startTunnel) — там честная
+            // повторная проба, а не «мигнул трафик — забыли».
         }
         streamWonFor = null
         lastStopReason = null

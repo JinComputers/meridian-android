@@ -88,9 +88,11 @@ object Brand {
     // Значения взяты из макета iOS (кот 4), чтобы клиенты выглядели
     // одинаково: серая планета, а спутник на ней синий и в обоих
     // состояниях — он и есть то, что показывает работу.
-
-    /** Заливка сферы, пока связи нет. */
-    val sphereOff = Color(0xFF15181F)
+    //
+    // ЗАЛИВКУ СДЕЛАЛИ ЧЁРНОЙ (23.09, дебаг), а контур и меридианы
+    // остались серыми — так тело сферы сливается с фоном (Brand.space,
+    // тоже чёрный), и на покое/подъёме видна только сетка контура и
+    // меридианов, без заливки-«блина» под ними.
 
     /** Контур и полюса, пока связи нет. */
     val edgeOff = Color(0xFF3A4358)
@@ -215,8 +217,8 @@ fun Planet(
 
         // ЦВЕТ ГОВОРИТ ТО ЖЕ, ЧТО И ДВИЖЕНИЕ. Планета горит синим
         // только когда туннель РЕАЛЬНО стоит; во время подъёма она
-        // такая же серая, как в покое. Разбор — у Brand.sphereOff.
-        val sphereColor = if (connected) Brand.sphere else Brand.sphereOff
+        // такая же чёрная внутри, как в покое. Разбор — у Brand.space.
+        val sphereColor = if (connected) Brand.sphere else Brand.space
         val edgeColor = if (connected) Brand.edge else Brand.edgeOff
         val meridianColor = if (connected) Brand.meridian else Brand.meridianOff
 
