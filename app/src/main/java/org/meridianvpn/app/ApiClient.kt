@@ -56,20 +56,40 @@ object ApiClient {
     private const val PORT = 21947
 
     /**
+     * Один адрес API: куда стучаться, каким портом и как проверять TLS.
+     *
+     * `pinned = true` — доверие только по закреплённому ключу (`ApiPins`),
+     * сертификат самоподписанный, цепочки доверия нет и не будет.
+     * `pinned = false` — обычное системное доверие: у адреса настоящий
+     * сертификат от публичного удостоверяющего центра, проверять его
+     * закреплённым ключом нельзя (ключ там свой, не `bYxJ...`) и не нужно
+     * (уже подтверждён цепочкой).
+     */
+    private data class Address(val host: String, val port: Int = PORT, val pinned: Boolean = true)
+
+    /**
      * Адреса API по порядку.
      *
      * Домен первым, IP вторым: имя может не разрешиться, адрес — нет.
      *
-     * ТРЕТИЙ БУДЕТ. Владелец даст его позже; место здесь, добавляется
-     * одной строкой, ничего больше менять не нужно.
+     * ТРЕТИЙ — cdn.jincomputers.win, добавлен 23.09 (Кот1: traefik по SNI
+     * заводит настоящий Let's Encrypt на отдельном терминаторе перед
+     * meridian-api, порт обычный 443, не 21947). Это ЕДИНСТВЕННЫЙ адрес с
+     * `pinned = false` — у него есть цепочка доверия, а закреплённый ключ
+     * `bYxJ...` тут в принципе не подойдёт: сертификат другой, настоящий
+     * CA-выпуск, а не самоподписанный. Применить к нему пин — повторить
+     * инцидент 14.09 наоборот (тогда пин ждал самоподписанный, а получил
+     * LE; здесь пин ждал бы LE-ключ, которого нет и не может быть заранее
+     * известен — LE меняет ключ при каждом продлении).
      *
-     * Оба адреса обязаны отдавать ОДИН И ТОТ ЖЕ закреплённый ключ. На
-     * 24.08.2026 так и есть, проверено обоим.
+     * ПЕРВЫЕ ДВА адреса обязаны отдавать ОДИН И ТОТ ЖЕ закреплённый ключ.
+     * На 24.08.2026 так и есть, проверено обоим и снова 23.09 после
+     * восстановления сертификата.
      */
     private val ADDRESSES = listOf(
-        "jinelectronics.ru",
-        "138.249.246.89",
-        // третий адрес — сюда
+        Address("jinelectronics.ru"),
+        Address("138.249.246.89"),
+        Address("cdn.jincomputers.win", port = 443, pinned = false),
     )
 
     /**
@@ -186,19 +206,19 @@ object ApiClient {
         val deadline = System.currentTimeMillis() + WALK_BUDGET_MS
         var lastWhy = "адресов нет"
 
-        for (host in ordered()) {
+        for (addr in ordered()) {
             if (System.currentTimeMillis() >= deadline) {
                 TunnelLog.add("API: срок обхода исчерпан, оставшиеся адреса не пробовал")
                 break
             }
-            when (val r = one(host, path, params, post)) {
+            when (val r = one(addr, path, params, post)) {
                 is Result.Unavailable -> {
                     // Молчание ОДНОГО адреса — не отказ. Идём дальше.
                     lastWhy = r.why
-                    TunnelLog.add("API: $host не ответил ($lastWhy), пробую следующий")
+                    TunnelLog.add("API: ${addr.host} не ответил ($lastWhy), пробую следующий")
                 }
                 else -> {
-                    rememberGood(host)
+                    rememberGood(addr.host)
                     return r
                 }
             }
@@ -209,11 +229,12 @@ object ApiClient {
 
     /** Один заход к одному адресу. */
     private fun one(
-        host: String,
+        addr: Address,
         path: String,
         params: Map<String, String>,
         post: Boolean,
     ): Result {
+        val host = addr.host
         var conn: HttpsURLConnection? = null
         try {
             val qs = params.entries.joinToString("&") {
@@ -229,7 +250,7 @@ object ApiClient {
             // Лишние параметры службы игнорируют, поэтому шлём весь
             // конверт: /v1/purchase возьмёт из него token и пройдёт мимо
             // остального.
-            val url = "https://$host:$PORT$path?$qs"
+            val url = "https://$host:${addr.port}$path?$qs"
 
             // ЧЕРЕЗ КАКУЮ СЕТЬ. Это не украшение, а условие работы.
             //
@@ -254,8 +275,15 @@ object ApiClient {
             val net = underlying()
             conn = (net?.openConnection(URL(url)) ?: URL(url).openConnection())
                 as HttpsURLConnection
-            conn.sslSocketFactory = pinnedFactory()
-            conn.hostnameVerifier = pinnedVerifier(host)
+            // ПИН — ТОЛЬКО ДЛЯ АДРЕСОВ С САМОПОДПИСАННЫМ СЕРТИФИКАТОМ.
+            // У адреса с pinned=false (cdn.jincomputers.win) — настоящая
+            // цепочка от публичного удостоверяющего центра; обычное
+            // системное доверие уже проверяет её, а закреплённый ключ
+            // здесь просто чужой и всегда провалит сверку.
+            if (addr.pinned) {
+                conn.sslSocketFactory = pinnedFactory()
+                conn.hostnameVerifier = pinnedVerifier(host)
+            }
             conn.connectTimeout = CONNECT_MS
             conn.readTimeout = READ_MS
             conn.useCaches = false
@@ -526,10 +554,10 @@ object ApiClient {
     }
 
     /** Последний удачный адрес первым, остальные в обычном порядке. */
-    private fun ordered(): List<String> {
+    private fun ordered(): List<Address> {
         val good = lastGood()
-        if (good == null || !ADDRESSES.contains(good)) return ADDRESSES
-        return listOf(good) + ADDRESSES.filter { it != good }
+        val goodAddr = ADDRESSES.find { it.host == good } ?: return ADDRESSES
+        return listOf(goodAddr) + ADDRESSES.filter { it.host != good }
     }
 
     private fun lastGood(): String? = try {
