@@ -1023,10 +1023,33 @@ class MeridianVpnService : VpnService() {
                 // построен — адрес для него мы узнаём только из ответа
                 // шлюза, а какой ступенью — только пройдя лестницу.
                 val assigned = try {
-                    Engine.connect(
-                        Config.GATEWAY, ladder, Access.password(), deviceId,
-                        protector, guard, CaptchaGate.solver(this), logger, listener
-                    )
+                    // РЕЗЕРВНЫЙ АДРЕС — ТОЛЬКО ЕСЛИ РЕЗОЛВ ИМЕНИ НЕ ДАЛ
+                    // НИЧЕГО, а не при любом отказе лестницы. Отличаем по
+                    // подстроке сообщения из engine/resolve.go: если
+                    // движок вообще не смог узнать адрес по имени (DoH,
+                    // системный DNS и кэш молчат), сессия внутри Connect()
+                    // ещё не заводилась — второй заход тем же вызовом
+                    // безопасен и ничего не задваивает. Если же адрес
+                    // получили, а не поднялась уже сама лестница на нём —
+                    // это обычный отказ, ниже его разбирает существующий
+                    // catch, как и раньше.
+                    try {
+                        Engine.connect(
+                            Config.EDGE_HOST, EdgeCache.get(this) ?: "", ladder,
+                            Access.password(), deviceId,
+                            protector, guard, CaptchaGate.solver(this), logger, listener
+                        )
+                    } catch (eResolve: Throwable) {
+                        if (eResolve.message?.contains("узнать адрес шлюза") != true) throw eResolve
+                        TunnelLog.add(
+                            "имя ${Config.EDGE_HOST} не резолвится (${eResolve.message}) " +
+                                "— иду на резервный адрес"
+                        )
+                        Engine.connect(
+                            Config.GATEWAY, "", ladder, Access.password(), deviceId,
+                            protector, guard, CaptchaGate.solver(this), logger, listener
+                        )
+                    }
                 } catch (e: Throwable) {
                     // Лестница не поднялась целиком. Запомненная ступень
                     // больше не годится — забываем молча, в следующий раз
@@ -1236,8 +1259,14 @@ class MeridianVpnService : VpnService() {
                 // Закрывать его здесь нельзя — будет двойное закрытие.
                 Engine.start(pfd.detachFd())
                 TunnelLog.add("туннель поднят")
+                // ЗАПОМИНАЕМ АДРЕС ТОЛЬКО ТЕПЕРЬ, после подтверждённого
+                // Start() — до этого момента известно лишь, что резолв
+                // что-то нашёл, а не что это «что-то» реально работает.
+                val via = Engine.resolvedVia()
+                if (via.isNotEmpty()) EdgeCache.set(this, Engine.resolvedAddr())
                 TunnelLog.event(
-                    "подключено, путь ${Paths.letterOf(Engine.winner())}, " +
+                    "подключено, путь ${Paths.letterOf(Engine.winner())}" +
+                        (if (via.isEmpty()) "" else " ($via)") + ", " +
                         "за ${(System.currentTimeMillis() - startedAt) / 1000} с"
                 )
                 // Всё получилось — прежней жалобе на экране больше не

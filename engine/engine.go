@@ -93,10 +93,26 @@ var (
 	// Счётчики последней сессии, см. LastTx и LastRx.
 	lastTx atomic.Uint64
 	lastRx atomic.Uint64
+
+	// Как и чем был получен адрес шлюза у ПОСЛЕДНЕГО Connect. Живут
+	// отдельно от session, как и счётчики выше: спросить их платформа
+	// может уже после того, как Connect вернулся, а сама session к этому
+	// моменту существует. См. ResolvedAddr/ResolvedVia.
+	lastResolvedAddr string
+	lastResolvedVia  string
 )
 
 // Connect проходит лестницу транспорта и поднимает сессию на первой
 // ступени, которая ответила.
+//
+// gateway — IP-литерал (как раньше) ИЛИ имя ("edge.jincomputers.win"). Имя
+// резолвится ЗДЕСЬ, до лестницы: DoH четырьмя открытыми резолверами, потом
+// системный DNS, потом cachedFallback (пустая строка — кэша нет). Разбор —
+// resolveGateway в resolve.go. IP-литерал резолв не запускает вовсе —
+// поведение для него не изменилось ни на строку.
+//
+// Резолв не дал ничего — Connect возвращает ошибку ДО лестницы, платформа
+// по решению владельца сама повторяет вызов со старым жёстким адресом.
 //
 // Возвращает выданный шлюзом адрес в виде "10.77.77.5/16" —
 // ПРЕФИКС ЗДЕСЬ ПРИМЕР, А НЕ КОНСТАНТА: он разбирается из маски,
@@ -104,10 +120,16 @@ var (
 // живой шлюз даёт /16; прежний пример /24 устарел и вводил в
 // заблуждение —
 // разбирается на стороне Kotlin для VpnService.Builder. Имя победившей
-// ступени доступно через Winner().
-func Connect(gateway string, ladder *Ladder, password string, deviceID string, prot Protector, guard NetworkGuard, captcha CaptchaSolver, log Logger, listener StateListener) (string, error) {
+// ступени доступно через Winner(), способ получения адреса шлюза — через
+// ResolvedVia()/ResolvedAddr().
+func Connect(gateway string, cachedFallback string, ladder *Ladder, password string, deviceID string, prot Protector, guard NetworkGuard, captcha CaptchaSolver, log Logger, listener StateListener) (string, error) {
 	if ladder == nil || len(ladder.items) == 0 {
 		return "", errors.New("лестница пуста: ни одной ступени")
+	}
+
+	resolved, via, err := resolveGateway(gateway, cachedFallback, prot, log)
+	if err != nil {
+		return "", err
 	}
 
 	mu.Lock()
@@ -122,6 +144,8 @@ func Connect(gateway string, ladder *Ladder, password string, deviceID string, p
 	// лестница обязана прибрать за собой сама, через s.stop().
 	s.onStop = func() { clearCurrent(s) }
 	current = s
+	lastResolvedAddr = resolved
+	lastResolvedVia = via
 	mu.Unlock()
 
 	// ВАЖНО: мьютекс отпущен на всё время лазания. Лестница живёт до
@@ -130,7 +154,7 @@ func Connect(gateway string, ladder *Ladder, password string, deviceID string, p
 	// секунд означает ANR. Побочная выгода — Stop() во время лазания
 	// теперь действительно обрывает его: current уже указывает на s,
 	// значит s.stop() отменит s.ctx, а от него наследуются сроки ступеней.
-	addr, err := s.climb(gateway, ladder, password, deviceID, prot)
+	addr, err := s.climb(resolved, ladder, password, deviceID, prot)
 	if err != nil {
 		s.stop("")
 		return "", err
@@ -163,6 +187,24 @@ func Winner() string {
 		return ""
 	}
 	return current.winner
+}
+
+// ResolvedVia — как был получен адрес шлюза у ПОСЛЕДНЕГО Connect: "DoH",
+// "системный DNS", "кэш" или "" (gateway и так был IP-литералом, резолв не
+// запускался). Платформа кладёт это в строку журнала рядом с Winner().
+func ResolvedVia() string {
+	mu.Lock()
+	defer mu.Unlock()
+	return lastResolvedVia
+}
+
+// ResolvedAddr — сам адрес, которым в итоге подключились. Платформа
+// сохраняет его в своём кэше ПОСЛЕ подтверждённого Start() — этот геттер
+// сам ничего не проверяет, отдаёт то, с чем прошла лестница.
+func ResolvedAddr() string {
+	mu.Lock()
+	defer mu.Unlock()
+	return lastResolvedAddr
 }
 
 // Start принимает дескриптор TUN, полученный из VpnService.Builder.establish().
