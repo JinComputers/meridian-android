@@ -943,8 +943,17 @@ func (s *session) climb(gateway string, ladder *Ladder, password, deviceID strin
 	// В гонку их не берём: TURN-аллокация это лишний обмен с третьей
 	// стороной, и гонять их наперегонки с прямыми значило бы тратить
 	// креды и аллокации там, где прямой путь и так работает.
+	relayTried := false
 	for _, c := range relays {
 		left := ladderLeft()
+		// Откат релея (SetRelayTarget): вторая релейная ступень идёт после
+		// первой, чей провал мог съесть остаток срока лестницы. Общий срок
+		// релей и так не ограничивает (см. ниже), так что откату его
+		// нехватка не помеха.
+		if relayTried && left < minCandidateBudget {
+			left = minCandidateBudget
+		}
+		relayTried = true
 		if left < minCandidateBudget {
 			s.logf("лестница: общий срок исчерпан, релейная ступень %s не пробовалась", c.name)
 			break

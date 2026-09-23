@@ -2105,6 +2105,19 @@ class MeridianVpnService : VpnService() {
                 // из списка ей нельзя, иначе отказ незаметен.
                 TunnelLog.add("хешей VK нет — релейная ступень откажет, добавь их на экране хешей")
             }
+
+            // relay.target из /v1/params: релей ведёт прямо на этот адрес,
+            // а прежняя ступень (адрес из edge) остаётся откатом следом.
+            // ПОСЛЕ addRelayHash: раздваивается уже готовая ступень, вместе
+            // с хешами.
+            val target = Params.relayTarget()
+            if (target.isNotEmpty()) {
+                if (ladder.setRelayTarget(target)) {
+                    TunnelLog.add("релей: конечный адрес $target (relay.target), откат — адрес из edge")
+                } else {
+                    TunnelLog.add("релей: relay.target «$target» негоден — иду на адрес из edge")
+                }
+            }
         }
 
         // Число слотов. Ноль означает умолчание — min(4, ядер), как у

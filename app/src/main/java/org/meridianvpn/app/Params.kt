@@ -292,6 +292,24 @@ object Params {
         }
     }
 
+    /**
+     * Конечный адрес релея: поле `relay.target` (решение владельца,
+     * 23.09). Только IPv4-литерал без порта, например "GATEWAY_IP";
+     * порт — Config.RELAY_GATEWAY_PORT, как и раньше. Пусто — поля нет,
+     * релей идёт на адрес из резолва edge, как раньше.
+     *
+     * Проверку на вменяемость (имя, порт, приватный адрес) делает движок
+     * в Ladder.SetRelayTarget и просто не принимает негодное.
+     */
+    fun relayTarget(): String {
+        val s = saved() ?: return ""
+        return try {
+            JSONObject(s).optJSONObject("relay")?.optString("target", "")?.trim() ?: ""
+        } catch (e: Throwable) {
+            ""
+        }
+    }
+
     // ------------------------------------------------------------------
     // Настройка лестницы от сервера: объект `ladder`.
     //
