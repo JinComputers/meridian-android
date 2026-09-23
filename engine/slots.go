@@ -315,8 +315,9 @@ func (s *session) dialOneSlot(num, want int) bool {
 	// caps считаются от ЖЕЛАЕМОГО числа слотов, а не от текущего: в
 	// многослотовой сессии поколение уходит в каждый слот, включая те,
 	// что поднимаются позже (спецификация 3.2).
+	needsNK := d.cand.transport != transTLS && !d.cand.useDTLS
 	if _, err := s.auth(r.link, r.pc, d.password, d.deviceID,
-		slotDialBudget, authCaps(2, s.sessionGen)); err != nil {
+		slotDialBudget, authCaps(2, s.sessionGen), needsNK); err != nil {
 		r.close()
 		s.logf("слот %d/%d: AUTH не прошёл: %v — продолжаю с %d",
 			num, want, err, len(s.slotList()))
