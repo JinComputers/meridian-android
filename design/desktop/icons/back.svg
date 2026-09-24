@@ -1,0 +1,6 @@
+<!-- Назад (BackButton), поле 40×40, цвет Brand.dim. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" width="40" height="40" fill="none" stroke="#7C859E" stroke-width="3.536" stroke-linecap="round">
+  <line x1="30.4" y1="20" x2="9.6" y2="20"/>
+  <line x1="9.6" y1="20" x2="18.96" y2="12.72"/>
+  <line x1="9.6" y1="20" x2="18.96" y2="27.28"/>
+</svg>

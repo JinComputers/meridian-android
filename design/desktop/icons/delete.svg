@@ -1,0 +1,5 @@
+<!-- Удалить (DeleteButton), поле 40×40, цвет Brand.dim. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" width="40" height="40" fill="none" stroke="#7C859E" stroke-width="2.206" stroke-linecap="round">
+  <line x1="12.647" y1="12.647" x2="27.353" y2="27.353"/>
+  <line x1="27.353" y1="12.647" x2="12.647" y2="27.353"/>
+</svg>
