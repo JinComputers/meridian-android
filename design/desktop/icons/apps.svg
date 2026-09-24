@@ -1,0 +1,7 @@
+<!-- Приложения / раздельный туннель (AppsIcon), поле 40×40, цвет Brand.edge. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" width="40" height="40" fill="none" stroke="#6F98FF" stroke-width="2.288">
+  <rect x="7.208" y="7.208" width="7.28" height="7.28"/>
+  <rect x="25.512" y="7.208" width="7.28" height="7.28"/>
+  <rect x="7.208" y="25.512" width="7.28" height="7.28"/>
+  <rect x="25.512" y="25.512" width="7.28" height="7.28"/>
+</svg>

@@ -1,0 +1,108 @@
+/* Оформление Meridian для настольных клиентов.
+   Перенос с Android: Brand в app/src/main/java/org/meridianvpn/app/Planet.kt,
+   тема в MainActivity.kt (darkColorScheme). 1 dp Android = 1 CSS px, 1 sp = 1 CSS px.
+   Тема ОДНА, чёрная. Светлой на Android нет. */
+
+:root {
+  /* Цвета */
+  --m-space: #000000;         /* фон окна */
+  --m-sphere: #171C26;        /* разделители, подложка нижней панели; заливка планеты при туннеле */
+  --m-edge: #6F98FF;          /* акцент: кнопки, ссылки, значки разделов, тревожная строка */
+  --m-meridian: #525D80;      /* шестерёнка настроек */
+  --m-edge-off: #3A4358;      /* контур планеты без связи */
+  --m-meridian-off: #272D3A;  /* меридианы без связи */
+  --m-text: #D7DCE8;          /* основной текст (не чисто белый) */
+  --m-dim: #7C859E;           /* второстепенный текст, значки назад/поделиться/удалить */
+  --m-on-accent: #000000;     /* текст на кнопке с заливкой --m-edge */
+
+  /* Цвета логотипа (значок приложения, НЕ экран) */
+  --m-logo-bg: #0A0C11;
+  --m-logo-sphere: #11141A;
+  --m-logo-edge: #5B8AFF;
+  --m-logo-meridian: #454E69;
+
+  /* Шрифт: на Android системный (Roboto). На компьютере — системный. */
+  --m-font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+
+  /* Размеры текста (sp → px) */
+  --m-fs-title: 20px;         /* заголовок экрана: «Настройки», «Логи», «Обход белых списков» */
+  --m-fs-title-sub: 17px;     /* «Раздельное туннелирование», заголовок строки настроек */
+  --m-fs-body: 16px;          /* bodyLarge (Material) */
+  --m-fs-body-medium: 14px;   /* bodyMedium, строка доступа в настройках, раскрывашка */
+  --m-fs-notice: 13px;        /* строка состояния под планетой, подсказки */
+  --m-fs-small: 12px;         /* статус ссылки, строки лога, версия */
+  --m-fs-tiny: 11px;          /* ссылка в списке, имя пакета */
+
+  /* Размеры и отступы (dp → px) */
+  --m-planet: 220px;          /* планета */
+  --m-icon: 40px;             /* поле значка-кнопки */
+  --m-pad-screen: 16px;       /* поля экрана */
+  --m-gap-main: 12px;         /* между блоками главного экрана */
+  --m-gap-block: 8px;         /* внутри блока доступа, между кнопками */
+  --m-row-pad-v: 14px;        /* вертикальные поля строки настроек */
+  --m-radius-input: 10px;     /* поле поиска */
+  --m-radius-button: 20px;    /* Material3 Button — полностью скруглённая «таблетка» высотой 40 */
+  --m-button-h: 40px;
+}
+
+html, body {
+  margin: 0;
+  background: var(--m-space);
+  color: var(--m-text);
+  font-family: var(--m-font);
+  font-size: var(--m-fs-body);
+}
+
+/* Кнопка с заливкой (Material3 Button в теме приложения) */
+.m-button {
+  height: var(--m-button-h);
+  border: 0;
+  border-radius: var(--m-radius-button);
+  background: var(--m-edge);
+  color: var(--m-on-accent);
+  font: 500 14px/1 var(--m-font);
+  letter-spacing: 0.1px;
+  padding: 0 24px;
+  cursor: pointer;
+}
+.m-button:disabled { opacity: 0.38; cursor: default; }
+
+/* Текстовая кнопка (TextButton): без заливки, акцентный текст */
+.m-text-button {
+  height: var(--m-button-h);
+  border: 0;
+  border-radius: var(--m-radius-button);
+  background: transparent;
+  color: var(--m-edge);
+  font: 500 14px/1 var(--m-font);
+  padding: 0 12px;
+  cursor: pointer;
+}
+
+/* Поле ввода (OutlinedTextField): контур --m-dim, в фокусе --m-edge */
+.m-input {
+  box-sizing: border-box;
+  width: 100%;
+  height: 56px;
+  border: 1px solid var(--m-dim);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--m-text);
+  font: 16px var(--m-font);
+  padding: 0 16px;
+}
+.m-input:focus { outline: none; border: 2px solid var(--m-edge); padding: 0 15px; }
+
+/* Строка состояния под планетой (Notice) */
+.m-notice { font-size: var(--m-fs-notice); text-align: center; color: var(--m-dim); }
+.m-notice.bad { color: var(--m-edge); }
+
+/* Строка раздела в настройках */
+.m-entry {
+  display: flex; align-items: center; gap: 12px;
+  padding: var(--m-row-pad-v) 0;
+  border-bottom: 1px solid var(--m-sphere);
+  cursor: pointer;
+}
+.m-entry .title { font-size: var(--m-fs-title-sub); color: var(--m-text); }
+.m-entry .hint { font-size: var(--m-fs-notice); color: var(--m-dim); }

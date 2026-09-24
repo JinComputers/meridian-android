@@ -129,11 +129,13 @@ var (
 // ступени доступно через Winner(), способ получения адреса шлюза — через
 // ResolvedVia()/ResolvedAddr().
 func Connect(gateway string, cachedFallback string, ladder *Ladder, password string, deviceID string, prot Protector, guard NetworkGuard, captcha CaptchaSolver, log Logger, listener StateListener) (string, error) {
+	// Причина отказа сбрасывается ПЕРВОЙ строкой: любой выход из Connect,
+	// включая ранний, не должен оставить FailureKind от прошлого вызова.
+	setFailure(FailNone)
 	if ladder == nil || len(ladder.items) == 0 {
 		return "", errors.New("лестница пуста: ни одной ступени")
 	}
 
-	setFailure(FailNone)
 	resolved, via, err := resolveGateway(gateway, cachedFallback, prot, log)
 	if err != nil {
 		setFailure(FailResolve)

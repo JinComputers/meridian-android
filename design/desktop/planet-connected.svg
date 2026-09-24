@@ -1,0 +1,13 @@
+<!-- Планета, ПОДКЛЮЧЕНО — статичный кадр (t = 0) для превью/скриншотов. В приложении меридианы вращаются и бежит спутник: planet.js, state='connected'. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 220" width="220" height="220">
+  <circle cx="110" cy="110" r="92.4" fill="#171C26"/>
+  <g fill="none" stroke="#525D80" stroke-width="2.033">
+    <ellipse cx="110" cy="110" rx="27.02" ry="92.4"/>
+    <ellipse cx="110" cy="110" rx="63.01" ry="92.4"/>
+    <ellipse cx="110" cy="110" rx="90.03" ry="92.4"/>
+  </g>
+  <circle cx="110" cy="110" r="92.4" fill="none" stroke="#6F98FF" stroke-width="4.158"/>
+  <circle cx="110" cy="17.6" r="6.93" fill="#6F98FF"/>
+  <circle cx="110" cy="202.4" r="6.93" fill="#6F98FF"/>
+  <circle cx="202.4" cy="110" r="5.89" fill="#6F98FF"/>
+</svg>

@@ -1,0 +1,11 @@
+<!-- Силуэт для трея/строки меню. Перенос ic_meridian_notify.xml (24×24): только контур, меридианы и точки, один цвет.
+     macOS: template image (чёрный + прозрачность, система перекрасит сама). Windows: белый на тёмной панели, чёрный на светлой. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+  <g fill="none" stroke="currentColor">
+    <circle cx="12" cy="12" r="9" stroke-width="1.6"/>
+    <ellipse cx="12" cy="12" rx="2.6" ry="9" stroke-width="1.1"/>
+    <ellipse cx="12" cy="12" rx="5.6" ry="9" stroke-width="1.1"/>
+  </g>
+  <circle cx="12" cy="3" r="1.6" fill="currentColor"/>
+  <circle cx="12" cy="21" r="1.6" fill="currentColor"/>
+</svg>
