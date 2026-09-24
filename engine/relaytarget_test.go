@@ -16,14 +16,14 @@ func TestSetRelayTargetSplitsRelayWithFallback(t *testing.T) {
 		t.Fatal("верный IPv4 не принят")
 	}
 	if len(l.items) != 3 {
-		t.Fatalf("ступеней %d, хочу 3 (прямая, релей на target, релей-откат)", len(l.items))
+		t.Fatalf("ступеней %d, хочу 3 (прямая, релей на edge, релей на target)", len(l.items))
 	}
-	via, fb := l.items[1], l.items[2]
+	fb, via := l.items[1], l.items[2]
 	if !via.isRelay || via.host != "138.124.78.252" {
 		t.Errorf("первая релейная: isRelay=%v host=%q", via.isRelay, via.host)
 	}
 	if !fb.isRelay || fb.host != "" {
-		t.Errorf("откат: isRelay=%v host=%q, хочу пустой host (адрес из edge)", fb.isRelay, fb.host)
+		t.Errorf("откат: isRelay=%v host=%q, хочу пустой host (edge идёт первым)", fb.isRelay, fb.host)
 	}
 	if via.port != 56005 || fb.port != 56005 {
 		t.Errorf("порт релея изменился: %d / %d", via.port, fb.port)
