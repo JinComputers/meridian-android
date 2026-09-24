@@ -166,6 +166,13 @@ const (
 	// Прежние 3 секунды обрывали нас ровно на втором повторе: шлюз
 	// принимал подключение на третьей секунде, когда мы уже сдались.
 	firstRungHandshake = 8 * time.Second
+
+	// rememberedHeadStart — фора запомненной ступени в первом круге гонки
+	// (шаг 1 в climb). Рабочая запомненная DTLS встаёт за ~0,35 с (лог
+	// 24.09, MTS 5G); первый повтор рукопожатия у pion — на 1 с. 1,2 с
+	// накрывают рукопожатие, прошедшее с первого раза, и не больше: если
+	// первый пакет потерян, дальше ждать её одну незачем.
+	rememberedHeadStart = 1200 * time.Millisecond
 	firstRungAuth      = 4 * time.Second
 
 	// raceHandshakeBudget — срок на ГОНКУ транспорта целиком.
@@ -386,6 +393,14 @@ type session struct {
 	// winner — имя ступени, которой сессия поднялась. Приложение
 	// запоминает его, чтобы в следующий раз начать с неё.
 	winner string
+
+	// Улики для причины отказа (failure.go). reached — хоть одна прямая
+	// ступень прошла рукопожатие, которое подделать нельзя (DTLS или
+	// пиновленный TLS): сервер из этой сети виден. hadRelay/relayErr — был
+	// ли релей в лестнице и чем кончился.
+	reached  atomic.Bool
+	hadRelay bool
+	relayErr error
 
 	// mtu — MTU выигравшей ступени. Приложение спрашивает его ПОСЛЕ
 	// Connect и уже с ним строит VpnService.Builder.
@@ -702,44 +717,27 @@ func (s *session) climb(gateway string, ladder *Ladder, password, deviceID strin
 		}
 	}
 
-	// 1. Запомненная ступень — без гонки.
+	// 1. Запомненная ступень — ФОРОЙ В ГОНКЕ, а не в одиночку.
+	//
+	// Было: запомненная шла одна, со сроком рукопожатия 8 с, и только после
+	// её провала начиналась гонка. Лог владельца 24.09 20:33:42 (MTS 5G):
+	// D, запомненная, на рукопожатие DTLS не получила ответа все 8 с, после
+	// чего гонка за 1,5 с подняла F — подключение 11 с вместо ~4. Прошлое
+	// подключение, 14 с, судя по второму кругу гонки, было таким же.
+	//
+	// Стало: запомненная стартует первой, остальные — через
+	// rememberedHeadStart. Рабочая запомненная к этому мигу уже готова (D
+	// в той же сети — за 355 мс), и гонка завершается без чужих сокетов.
+	// Молчащая не держит лестницу: остальные идут следом, а она
+	// продолжает своё рукопожатие наравне с ними. Откажет раньше срока —
+	// остальные стартуют сразу. Фору без DTLS запомненная не отдаёт:
+	// выбор уже сделан памятью пути.
 	if len(directs) > 0 && directs[0].remembered {
-		c := directs[0]
-		directs = directs[1:]
-		s.logf("ступень %s запомнена для этой сети — иду прямо к ней, без гонки", c.name)
-		addr, err := s.dialOne(s.ctx, gateway, c, password, deviceID, prot,
-			ladder.failDirect, firstRungHandshake, firstRungAuth)
-		if err == nil {
-			s.winner = c.name
-			s.winCand = c
-			return addr, nil
+		s.logf("ступень %s запомнена для этой сети — иду к ней первой, остальные через %s",
+			directs[0].name, rememberedHeadStart)
+		for i := 1; i < len(directs); i++ {
+			directs[i].delay = rememberedHeadStart
 		}
-		if fatalForLadder(err) {
-			return "", err
-		}
-		if isNetworkGone(err) || errors.Is(err, errNetworkGone) {
-			s.logf("сеть сменилась во время подъёма — прекращаю попытку целиком")
-			return "", errNetworkGone
-		}
-		s.logf("запомненная ступень %s не поднялась: %v", c.name, err)
-		lastErr = err
-		note(err)
-
-		// ВОЗВРАЩАЕМ ЕЁ В ГОНКУ, а не списываем со счетов.
-		//
-		// Из списка её убрали выше, чтобы не пробовать дважды подряд
-		// одним и тем же способом. Но провалить проверку трафика и быть
-		// негодной навсегда — разные вещи: 26.08 ступень C то несла
-		// трафик, то нет, в пределах одной минуты. Списать её значило бы
-		// остаться с двумя ступенями DTLS, которые на этой сети не
-		// поднимаются вовсе, и не подключиться совсем.
-		//
-		// В гонке она идёт наравне с остальными и ничего не стоит по
-		// времени: ступени поднимаются одновременно.
-		//
-		// Но форой она больше не платит: см. candidate.spent.
-		c.spent = true
-		directs = append(directs, c)
 	}
 
 	// 2. Гонка среди оставшихся прямых ступеней.
@@ -761,6 +759,53 @@ func (s *session) climb(gateway string, ladder *Ladder, password, deviceID strin
 	// хотя бы пытались завершить рукопожатие. Фору с уже пробованной C я
 	// снял (candidate.spent) — и дыра проступила. Она была и до этого,
 	// просто реже.
+	//
+	// ПОТОКИ СТАРТУЮТ, НЕ ДОЖИДАЯСЬ КОНЦА ГОНКИ UDP (решение владельца
+	// 24.09). Раньше потоковая гонка начиналась только после того, как UDP
+	// выбрал весь свой срок (до 8 с), и на сети, режущей UDP, эти секунды
+	// уходили впустую. Теперь через streamEarlyStart после начала гонки UDP
+	// потоки поднимают транспорт параллельно; результат ждёт своей очереди
+	// в шаге 3. AUTH по-прежнему один и по очереди: race поднимает только
+	// транспорт, и живой поток без AUTH слота на шлюзе не занимает (разбор
+	// в шаге 3). UDP успел — поток гасится, не дойдя до AUTH.
+	early := s.startEarlyStreams(gateway, streams, directs, password, prot,
+		ladder.failDirect, ladderLeft)
+	defer early.discard()
+
+	// tryEarly — забрать уже поднятый поток и провести его AUTH. done —
+	// лестница на этом кончена (успехом, отказом шлюза или уходом сети);
+	// иначе поток выбыл, и круг UDP продолжается как ни в чём не бывало:
+	// оставшиеся UDP-ступени не теряются.
+	tryEarly := func() (addr string, done bool, err error) {
+		if !early.ready() {
+			return "", false, nil
+		}
+		sr, serr := early.take()
+		if serr != nil {
+			return "", false, nil
+		}
+		s.logf("поток %s уже поднят — пробую его раньше нового круга UDP", sr.cand.name)
+		saddr, saerr := s.authRung(sr, password, deviceID,
+			minDuration(firstRungAuth, ladderLeft()))
+		if saerr == nil {
+			s.winner = sr.cand.name
+			s.winCand = sr.cand
+			return saddr, true, nil
+		}
+		if fatalForLadder(saerr) {
+			return "", true, saerr
+		}
+		if isNetworkGone(saerr) || errors.Is(saerr, errNetworkGone) {
+			s.logf("сеть сменилась во время потоковой ступени — прекращаю попытку целиком")
+			return "", true, errNetworkGone
+		}
+		s.logf("потоковая ступень %s: AUTH не прошёл: %v", sr.cand.name, saerr)
+		lastErr = saerr
+		note(saerr)
+		streams = dropCandidate(streams, sr.cand.name)
+		return "", false, nil
+	}
+
 	raceRound := 0
 	for len(directs) > 0 {
 		raceRound++
@@ -784,7 +829,41 @@ func (s *session) climb(gateway string, ladder *Ladder, password, deviceID strin
 			if hsBudget < minCandidateBudget {
 				hsBudget = minCandidateBudget
 			}
-			won, err := s.race(s.ctx, gateway, directs, password, prot, ladder.failDirect, hsBudget)
+			// ГОТОВЫЙ ПОТОК ПРЕРЫВАЕТ КРУГ UDP, в котором победителя ещё нет.
+			// Лог 24.09 20:46:10: G встал за 0,1 с, а круг UDP ещё 1,5 с
+			// держал фору без DTLS ради ступеней, которые на этой сети не
+			// отвечают, потом F прошла AUTH и оглохла — G взяли только в
+			// :13. Следим, только пока поток не забран: забранный больше
+			// не прервёт ни один круг.
+			raceCtx, stopRace := context.WithCancel(s.ctx)
+			if early.started() {
+				go func() {
+					select {
+					case <-early.readyC():
+						stopRace()
+					case <-raceCtx.Done():
+					}
+				}()
+			}
+			won, err := s.race(raceCtx, gateway, directs, password, prot, ladder.failDirect, hsBudget)
+			preempted := err != nil && s.ctx.Err() == nil && early.ready()
+			stopRace()
+			// Фора запомненной — только в первом круге. Дальше она
+			// пробованная (spent): ни форы, ни облегчённой проверки.
+			for i := range directs {
+				directs[i].delay = 0
+				if directs[i].remembered {
+					directs[i].spent = true
+				}
+			}
+			if preempted {
+				s.logf("поток поднялся раньше UDP — круг UDP прерван")
+				if addr, done, ferr := tryEarly(); done {
+					return addr, ferr
+				}
+				// Поток не довёз — круг UDP заново, ступени те же.
+				continue
+			}
 			if err != nil {
 				// Уход сети — не отказ ступеней. Все они идут через один
 				// маршрут по умолчанию, и если он исчез, дальше по
@@ -804,8 +883,24 @@ func (s *session) climb(gateway string, ladder *Ladder, password, deviceID strin
 			} else {
 				// AUTH — только здесь и только один: к этому моменту
 				// race уже дождался гибели всех проигравших.
+				//
+				// Пока идут AUTH и метки победителя, потоки заранее не
+				// стартуют: транспорт UDP уже есть, скорее всего он и
+				// станет туннелем.
+				//
+				// Только за запомненную в её первом заходе: за неё говорит
+				// память пути. Случайный победитель гонки такого доверия не
+				// заслужил — лог 24.09 20:40: C прошла AUTH и оглохла на
+				// метке, а потоки, придержанные ради неё, встали позже.
+				if won.cand.remembered && !won.cand.spent {
+					early.hold()
+				}
 				addr, aerr := s.authRung(won, password, deviceID,
 					minDuration(firstRungAuth, ladderLeft()))
+				if aerr != nil {
+					// UDP-победитель не довёз — потоки сразу, без срока.
+					early.now()
+				}
 				if aerr == nil {
 					s.winner = won.cand.name
 					s.winCand = won.cand
@@ -834,6 +929,18 @@ func (s *session) climb(gateway string, ladder *Ladder, password, deviceID strin
 						"второй круг не делаю", won.cand.name)
 					break
 				}
+
+				// ГОТОВЫЙ ПОТОК — ВПЕРЁД НОВОГО КРУГА UDP. Поток уже поднят
+				// и ждёт; новый круг UDP — это ещё до трёх секунд
+				// рукопожатий на сети, где UDP только что не довёз. Лог
+				// 24.09 20:40:34: G был готов с :32, а лестница потратила
+				// ещё круг на A, B, D, E и взяла G только в :37.
+				// Поток не довёз — возвращаемся к кругу UDP как ни в чём не
+				// бывало: оставшиеся UDP-ступени не теряются.
+				if addr, done, ferr := tryEarly(); done {
+					return addr, ferr
+				}
+
 				if len(directs) > 0 {
 					names := make([]string, 0, len(directs))
 					for _, c := range directs {
@@ -894,10 +1001,17 @@ func (s *session) climb(gateway string, ladder *Ladder, password, deviceID strin
 		for _, c := range streams {
 			names = append(names, c.name+"/"+streamKindText(c.transport))
 		}
-		s.logf("потоковые ступени наперегонки, круг %d: %s",
-			streamRound, strings.Join(names, ", "))
-
-		won, err := s.race(s.ctx, gateway, streams, password, prot, ladder.failDirect, hsBudget)
+		var won *rung
+		var err error
+		if streamRound == 1 && early.started() {
+			// Первый круг уже идёт с середины гонки UDP — ждём его итога.
+			s.logf("потоковые ступени, круг 1: гонка запущена заранее, жду итога")
+			won, err = early.take()
+		} else {
+			s.logf("потоковые ступени наперегонки, круг %d: %s",
+				streamRound, strings.Join(names, ", "))
+			won, err = s.race(s.ctx, gateway, streams, password, prot, ladder.failDirect, hsBudget)
+		}
 		if err != nil {
 			if isNetworkGone(err) || errors.Is(err, errNetworkGone) {
 				s.logf("сеть сменилась во время потоковой гонки — прекращаю попытку целиком")
@@ -944,6 +1058,7 @@ func (s *session) climb(gateway string, ladder *Ladder, password, deviceID strin
 	// стороной, и гонять их наперегонки с прямыми значило бы тратить
 	// креды и аллокации там, где прямой путь и так работает.
 	relayTried := false
+	s.hadRelay = len(relays) > 0
 	for _, c := range relays {
 		left := ladderLeft()
 		// Откат релея (SetRelayTarget): вторая релейная ступень идёт после
@@ -1002,6 +1117,11 @@ func (s *session) climb(gateway string, ladder *Ladder, password, deviceID strin
 		}
 		s.logf("ступень %s — неудача за %s: %v", c.name,
 			time.Since(relayStart).Round(time.Millisecond), err)
+		// Первая релейная неудача содержательнее второй: откат на
+		// relay.target идёт с теми же хешами и повторит ту же беду с кредами.
+		if s.relayErr == nil {
+			s.relayErr = err
+		}
 		lastErr = err
 		note(err)
 	}
@@ -1148,7 +1268,36 @@ func (s *session) proveRung(r *rung) error {
 	// ступень будет держать лестницу сколько угодно.
 	retried := false
 
-	for i := 1; i <= 2; i++ {
+	// ЗАПОМНЕННОЙ СТУПЕНИ — ОДНА МЕТКА (решение владельца 24.09, вариант 2).
+	//
+	// Пауза перед второй меткой — полторы секунды на КАЖДОМ подключении, а
+	// запомненная ступень на этой сети уже работала. Поломку «ответила на
+	// AUTH и оглохла через секунду» здесь больше не ловим до подъёма: её
+	// поймает сторож немоты уже в поднятом туннеле (suspectSilenceLimit),
+	// переподключение забудет немой путь (forgetMutePath) и пойдёт гонкой.
+	// Цена промаха — секунды переподключения вместо следующей ступени.
+	//
+	// Только при первом заходе к ней: вернувшись в гонку после провала
+	// (spent), она проверяется полностью, как любая.
+	//
+	// ПОТОКУ (TCP/TLS) — ТОЖЕ ОДНА. Вторая метка ловит беду UDP: первый
+	// обмен в потоке датаграмм проходит, следующие режут (26.08, 24.09 —
+	// B ответила на метку 1 и умерла до метки 2). У TCP доставка своя, а
+	// резать поток после подъёма оператор начинает через секунды, не через
+	// полторы — это ловит сторож немоты и память пути (PathMemory,
+	// MUTE_SUFFIX), вторая метка его не видит. Платить за неё полторы
+	// секунды на каждом подъёме потоком не за что (лог 24.09 20:46:13).
+	marks := 2
+	switch {
+	case r.cand.remembered && !r.cand.spent:
+		marks = 1
+		s.logf("%s: запомненная ступень — проверяю одной меткой", r.cand.name)
+	case r.cand.transport == transTCP || r.cand.transport == transTLS:
+		marks = 1
+		s.logf("%s: поток — проверяю одной меткой", r.cand.name)
+	}
+
+	for i := 1; i <= marks; i++ {
 		if i > 1 {
 			gapFrom := time.Now()
 			select {
@@ -1622,6 +1771,8 @@ func (s *session) auth(
 		s.echoConf = true
 	}
 	s.logf("шлюз %s, маска /%d, эхо-keepalive=%v", parts[2], prefix, s.echoConf)
+	lastAuthGateway.Store(parts[2])
+	lastAuthMaskHex.Store(parts[3])
 
 	// Сроки снимаются ТОЛЬКО здесь — когда позади и рукопожатие, и AUTH.
 	// Снять их раньше означало бы вернуть молчаливое зависание.

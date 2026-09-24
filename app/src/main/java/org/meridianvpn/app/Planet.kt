@@ -193,7 +193,11 @@ fun Planet(
         connected -> "подключено"
         else -> "отключено"
     }
-    val clickLabel = if (connected) "отключить" else "подключить"
+    val clickLabel = when {
+        connected -> "отключить"
+        busy -> "остановить подключение"
+        else -> "подключить"
+    }
 
     Canvas(
         modifier = modifier

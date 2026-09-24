@@ -50,7 +50,7 @@ func resolveGateway(hostGateway, cachedFallback string, prot Protector, log Logg
 		return ip, "DoH", nil
 	}
 
-	if ip, ok := viaSystemDNS(hostGateway, logf); ok {
+	if ip, ok := viaSystemDNS(hostGateway, prot, logf); ok {
 		return ip, "системный DNS", nil
 	}
 
@@ -60,6 +60,22 @@ func resolveGateway(hostGateway, cachedFallback string, prot Protector, log Logg
 	}
 
 	return "", "", fmt.Errorf("не удалось узнать адрес шлюза по имени %s", hostGateway)
+}
+
+// ResolveName — только резолв имени шлюза, без лестницы: DoH, потом
+// системный DNS, БЕЗ кэша. Пусто — не вышло (причины в логе).
+//
+// ЗАЧЕМ ОТДЕЛЬНО. Платформа с запомненным рабочим адресом подключается по
+// нему сразу, IP-литералом (резолв в Connect тогда не запускается и
+// времени не ест), а этим вызовом ПАРАЛЛЕЛЬНО проверяет, не сменился ли
+// адрес. Сменился и по старому не поднялось — повторяет Connect с новым.
+// IP-литерал возвращается как есть.
+func ResolveName(host string, prot Protector, log Logger) string {
+	addr, _, err := resolveGateway(host, "", prot, log)
+	if err != nil {
+		return ""
+	}
+	return addr
 }
 
 // --- DoH ------------------------------------------------------------------
@@ -98,27 +114,48 @@ const dohBudget = 4 * time.Second
 
 const dohDialTimeout = 1500 * time.Millisecond
 
+// ВСЕ РЕЗОЛВЕРЫ РАЗОМ, ПЕРВЫЙ ГОДНЫЙ ОТВЕТ ПОБЕЖДАЕТ.
+//
+// Было по очереди, и на сети с белыми списками, где все четыре закрыты,
+// каждый съедал свой срок дозвона (1,5 с): весь бюджет в 4 с уходил впустую
+// на КАЖДОМ подключении, прежде чем дело доходило до системного DNS. Разом —
+// не дольше одного срока дозвона. На открытой сети побеждает самый быстрый.
+// Остальные гасятся отменой контекста.
 func viaDoH(host string, prot Protector, logf func(string, ...interface{})) (string, bool) {
-	order := append([]dohProvider(nil), dohProviders...)
-	rand.Shuffle(len(order), func(i, j int) { order[i], order[j] = order[j], order[i] })
-
 	ctx, cancel := context.WithTimeout(context.Background(), dohBudget)
 	defer cancel()
 
-	for _, p := range order {
-		if ctx.Err() != nil {
-			break
+	type answer struct {
+		p   dohProvider
+		ip  string
+		err error
+	}
+	// Буфер на всех: проигравшие не должны висеть на записи после return.
+	out := make(chan answer, len(dohProviders))
+	for _, p := range dohProviders {
+		go func(p dohProvider) {
+			ip, err := dohQuery(ctx, p, host, prot)
+			out <- answer{p, ip, err}
+		}(p)
+	}
+
+	for range dohProviders {
+		var a answer
+		select {
+		case a = <-out:
+		case <-ctx.Done():
+			logf("DoH: срок %s вышел, ни один резолвер не ответил годным адресом", dohBudget)
+			return "", false
 		}
-		ip, err := dohQuery(ctx, p, host, prot)
-		if err != nil {
-			logf("DoH %s: %v", p.ip, err)
+		if a.err != nil {
+			logf("DoH %s: %v", a.p.ip, a.err)
 			continue
 		}
-		if isPrivateOrSpecial(ip) {
-			logf("DoH %s вернул приватный адрес %s — не годится", p.ip, ip)
+		if isPrivateOrSpecial(a.ip) {
+			logf("DoH %s вернул приватный адрес %s — не годится", a.p.ip, a.ip)
 			continue
 		}
-		return ip, true
+		return a.ip, true
 	}
 	return "", false
 }
@@ -142,7 +179,7 @@ func dohQuery(ctx context.Context, p dohProvider, host string, prot Protector) (
 				// Тот же protectControl, что и у прямых ступеней
 				// (race.go) — сокет до резолвера обязан быть исключён
 				// из туннеля тем же порядком, что и сокет до шлюза.
-				Control: protectControl(prot, func(string, ...interface{}) {}, "DoH"),
+				Control: protectDialControl(prot, func(string, ...interface{}) {}, "DoH"),
 			}).DialContext,
 			TLSClientConfig: &tls.Config{ServerName: p.sni},
 		},
@@ -169,11 +206,17 @@ func dohQuery(ctx context.Context, p dohProvider, host string, prot Protector) (
 
 const systemDNSTimeout = 2 * time.Second
 
-func viaSystemDNS(host string, logf func(string, ...interface{})) (string, bool) {
+func viaSystemDNS(host string, prot Protector, logf func(string, ...interface{})) (string, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), systemDNSTimeout)
 	defer cancel()
 
-	addrs, err := net.DefaultResolver.LookupHost(ctx, host)
+	// Платформа разрешает сама, если умеет (hostResolver, exclude.go): системный
+	// резолвер при живом туннеле может уйти в туннель.
+	addrs, viaPlatform := lookupViaPlatform(prot, host)
+	var err error
+	if !viaPlatform {
+		addrs, err = net.DefaultResolver.LookupHost(ctx, host)
+	}
 	if err != nil {
 		logf("системный DNS: %v", err)
 		return "", false

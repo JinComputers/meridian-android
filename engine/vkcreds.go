@@ -148,6 +148,11 @@ var (
 	// errVKServer — сбой НА СТОРОНЕ VK, не наш и не хеша. Хеш по такой
 	// ошибке не помечается никак.
 	errVKServer = errors.New("сбой на стороне VK")
+
+	// errVKAllFailed — перебор хешей кончился без кредов, а годные в пуле
+	// остались: VK не ответил за срок, не дал релея, сбоил. Итог перебора,
+	// а не вердикт одному хешу.
+	errVKAllFailed = errors.New("VK не дал кредов")
 )
 
 // vkCache — комплекты, добытые в этой сессии.
@@ -184,6 +189,9 @@ func protectedHTTP(prot Protector) *http.Client {
 	d := &net.Dialer{
 		Timeout: vkStepTimeout,
 		Control: func(network, address string, rc syscall.RawConn) error {
+			if host, _, err := net.SplitHostPort(address); err == nil {
+				excludeHost(prot, host) // адрес назначения уже разрешён Go
+			}
 			var perr error
 			if err := rc.Control(func(fd uintptr) {
 				if prot == nil {
@@ -200,7 +208,7 @@ func protectedHTTP(prot Protector) *http.Client {
 	}
 	return &http.Client{
 		Timeout:   vkStepTimeout,
-		Transport: &http.Transport{DialContext: d.DialContext},
+		Transport: &http.Transport{DialContext: resolvingDialContext(d, prot)},
 	}
 }
 
@@ -465,7 +473,18 @@ func (s *session) fetchCreds(ctx context.Context, c candidate, batch int, prot P
 			s.logf("VK: хеш %s не дал кредов: %v", shortHash(hash), err)
 		}
 	}
-	return turnCreds{}, fmt.Errorf("ни один из %d хешей не дал кредов", len(c.hashes))
+	// ИТОГ ПО ПУЛУ — В ОШИБКУ, чтобы причина отказа (failure.go) сказала
+	// человеку, что делать: решить капчу или добавить свежие ссылки.
+	live, dead, captcha := cache.poolSummary(c.hashes)
+	switch {
+	case live == 0 && captcha > 0:
+		return turnCreds{}, fmt.Errorf("%w: ни один из %d хешей не дал кредов (мёртвых %d, в капче %d)",
+			errVKCaptcha, len(c.hashes), dead, captcha)
+	case live == 0:
+		return turnCreds{}, fmt.Errorf("%w: ни один из %d хешей не дал кредов, все мёртвые",
+			errVKDead, len(c.hashes))
+	}
+	return turnCreds{}, fmt.Errorf("%w: ни один из %d хешей не дал кредов", errVKAllFailed, len(c.hashes))
 }
 
 // run проходит все пять шагов.

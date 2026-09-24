@@ -151,6 +151,18 @@ object PathMemory {
             .apply()
     }
 
+    /**
+     * Забыть ТОЛЬКО запомненную ступень, счётчик побед релея и потока не
+     * трогая: он и учит лестницу идти мимо UDP на такой сети, а forget()
+     * обнулил бы его ровно тогда, когда он растёт.
+     */
+    fun forgetRung(ctx: Context, key: String) {
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .remove(key)
+            .apply()
+    }
+
     /** Сколько раз подряд на этой сети победил релей, а не прямой. */
     fun relayStreak(ctx: Context, key: String): Int =
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getInt(key + STREAK_SUFFIX, 0)

@@ -57,7 +57,7 @@ func (s *session) dialStream(
 	// listenProtected. Без него запрос ушёл бы ВНУТРЬ туннеля, который
 	// мы ещё и поднимаем.
 	d := &net.Dialer{
-		Control: protectControl(prot, s.logf, c.name),
+		Control: protectDialControl(prot, s.logf, c.name),
 		Timeout: budget,
 	}
 	addr := net.JoinHostPort(host, strconv.Itoa(int(c.port)))
