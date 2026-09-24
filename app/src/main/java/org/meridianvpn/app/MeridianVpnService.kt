@@ -2106,16 +2106,17 @@ class MeridianVpnService : VpnService() {
                 TunnelLog.add("хешей VK нет — релейная ступень откажет, добавь их на экране хешей")
             }
 
-            // relay.target из /v1/params: релей ведёт прямо на этот адрес,
-            // а прежняя ступень (адрес из edge) остаётся откатом следом.
+            // relay.target из /v1/params — ЗАПАСНОЙ конечный адрес релея
+            // (решение владельца 24.09): сначала релей на адрес из edge, как
+            // было, и только если не поднялся — на этот адрес (Париж).
             // ПОСЛЕ addRelayHash: раздваивается уже готовая ступень, вместе
             // с хешами.
             val target = Params.relayTarget()
             if (target.isNotEmpty()) {
                 if (ladder.setRelayTarget(target)) {
-                    TunnelLog.add("релей: конечный адрес $target (relay.target), откат — адрес из edge")
+                    TunnelLog.add("релей: сначала адрес из edge, запасной — $target (relay.target)")
                 } else {
-                    TunnelLog.add("релей: relay.target «$target» негоден — иду на адрес из edge")
+                    TunnelLog.add("релей: relay.target «$target» негоден — запасного адреса нет, иду только на адрес из edge")
                 }
             }
         }
