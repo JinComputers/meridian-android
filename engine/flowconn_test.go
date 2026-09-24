@@ -215,3 +215,37 @@ func TestFlowWriteIsSafeInParallel(t *testing.T) {
 		}
 	}
 }
+
+// Крупный пакет от платформы (1360 > 1280, первый живой прогон Windows) не
+// рвёт поток: он отбрасывается, следующий кадр читается.
+func TestFlowOversizeFrameIsDroppedNotFatal(t *testing.T) {
+	big := make([]byte, flowFrameMax+80)
+	batch := append([]byte{byte(len(big) >> 8), byte(len(big))}, big...)
+	batch = append(batch, frame(7, 8, 9)...)
+
+	var logged []string
+	f := &fakeFlow{batches: [][]byte{batch}}
+	c := newFlowConn(f, func(format string, a ...interface{}) { logged = append(logged, format) })
+
+	buf := make([]byte, flowFrameMax)
+	n, err := c.Read(buf)
+	if err != nil {
+		t.Fatalf("крупный пакет порвал поток: %v", err)
+	}
+	if !bytes.Equal(buf[:n], []byte{7, 8, 9}) {
+		t.Fatalf("после отброшенного пакета прочитано %v", buf[:n])
+	}
+	if c.oversize != 1 || len(logged) != 1 {
+		t.Errorf("oversize=%d, строк лога %d, хочу 1 и 1", c.oversize, len(logged))
+	}
+}
+
+// Кадр, заявивший длину за пределами пачки, по-прежнему рвёт поток: это
+// мусор, а не большой пакет.
+func TestFlowOversizeClaimBeyondBatchIsStillFatal(t *testing.T) {
+	f := &fakeFlow{batches: [][]byte{{0x07, 0xD0, 1, 2, 3}}} // 2000 байт заявлено, 3 есть
+	c := newFlowConn(f, nil)
+	if _, err := c.Read(make([]byte, flowFrameMax)); err == nil || err == io.EOF {
+		t.Fatalf("ждали структурную ошибку, получили %v", err)
+	}
+}

@@ -24,7 +24,10 @@ import engine.Protector
 import engine.StateListener
 import java.net.Inet4Address
 import java.net.Inet6Address
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.thread
@@ -47,6 +50,13 @@ class MeridianVpnService : VpnService() {
 
         private const val CHANNEL_ID = "meridian_tunnel"
         private const val NOTIFICATION_ID = 1
+
+        // Причина отказа. 2 и 3 заняты капчей и триалом.
+        private const val FAIL_CHANNEL_ID = "meridian_fail"
+        private const val FAIL_NOTIFICATION_ID = 4
+
+        // Сколько ждать параллельного резолва после неудачи по кэшу.
+        private const val EDGE_RESOLVE_WAIT_MS = 7000L
 
         /**
          * Пауза перед ПЕРВОЙ попыткой переподключения.
@@ -491,6 +501,14 @@ class MeridianVpnService : VpnService() {
     private var lastStopReason: String? = null
 
     /**
+     * Совет последней неудачной попытки (failureAdvice), null — совета не
+     * было. Нужен, когда сдаёмся после серии переподключений: сказать, что
+     * делать, а не только сколько раз не вышло.
+     */
+    @Volatile
+    private var lastFailAdvice: String? = null
+
+    /**
      * Буква ступени → устойчивое имя узла из ответа службы.
      *
      * ПАМЯТЬ ПУТЕЙ ДЕРЖИТСЯ НА id, А НЕ НА БУКВЕ. Буква — это место в
@@ -720,6 +738,10 @@ class MeridianVpnService : VpnService() {
                 TunnelLog.add("удержание процессора не вышло: ${e.message}")
                 null
             }
+            // Код причины отказа из движка (engine/failure.go). Берётся ТОЛЬКО
+            // там, где упал сам Engine.connect: у остальных ошибок подъёма
+            // свой текст, а значение в движке осталось бы от прошлого вызова.
+            var failKind = ""
             try {
                 // Одно значение на всё приложение, см. Access.deviceId().
                 // Раньше здесь стоял свой вызов ANDROID_ID с подстановкой
@@ -910,10 +932,30 @@ class MeridianVpnService : VpnService() {
                 // вышел срок. Мы на фоновом потоке, звать можно прямо
                 // здесь. Не дозвонились — не беда: по правилу 1 работаем
                 // по последнему удачному ответу, сколько бы ни прошло.
-                try {
-                    Params.refreshIfDue()
-                } catch (e: Throwable) {
-                    TunnelLog.add("параметры: запрос сорвался (${e.message})")
+                //
+                // ЖДЁМ ОТВЕТА, ТОЛЬКО КОГДА СОХРАНЁННОГО НЕТ ВОВСЕ. Есть
+                // сохранённый (пусть с вышедшим сроком) — по правилу 1 им и
+                // подключаемся, а обновление идёт в фоне для следующего
+                // раза. Прежде запрос стоял поперёк подъёма: на сети, где
+                // API закрыт (белые списки), до 10 с на обход трёх адресов
+                // на каждом подключении, прежде чем начиналась лестница.
+                if (Params.haveSaved()) {
+                    if (Params.timeToRefresh()) {
+                        TunnelLog.add("параметры: срок вышел — обновляю в фоне, подключаюсь по сохранённым")
+                        thread(name = "meridian-params-refresh") {
+                            try {
+                                Params.refreshIfDue()
+                            } catch (e: Throwable) {
+                                TunnelLog.add("параметры: запрос сорвался (${e.message})")
+                            }
+                        }
+                    }
+                } else {
+                    try {
+                        Params.refreshIfDue()
+                    } catch (e: Throwable) {
+                        TunnelLog.add("параметры: запрос сорвался (${e.message})")
+                    }
                 }
 
                 TunnelLog.add(
@@ -1034,13 +1076,10 @@ class MeridianVpnService : VpnService() {
                     // это обычный отказ, ниже его разбирает существующий
                     // catch, как и раньше.
                     try {
-                        Engine.connect(
-                            Config.EDGE_HOST, EdgeCache.get(this) ?: "", ladder,
-                            Access.password(), deviceId,
-                            protector, guard, CaptchaGate.solver(this), logger, listener
-                        )
+                        connectEngine(ladder, deviceId, protector, guard, logger, listener)
                     } catch (eResolve: Throwable) {
                         if (eResolve.message?.contains("узнать адрес шлюза") != true) throw eResolve
+                        edgeVia = ""
                         TunnelLog.add(
                             "имя ${Config.EDGE_HOST} не резолвится (${eResolve.message}) " +
                                 "— иду на резервный адрес"
@@ -1051,6 +1090,10 @@ class MeridianVpnService : VpnService() {
                         )
                     }
                 } catch (e: Throwable) {
+                    // ОСТАНОВЛЕНО НАЖАТИЕМ — ни памяти путей, ни параметров:
+                    // лестница не провалилась, её прервал человек.
+                    if (shuttingDown.get()) throw e
+                    failKind = try { Engine.failureKind() } catch (t: Throwable) { "" }
                     // Лестница не поднялась целиком. Запомненная ступень
                     // больше не годится — забываем молча, в следующий раз
                     // пойдём обычным порядком.
@@ -1097,14 +1140,32 @@ class MeridianVpnService : VpnService() {
                     //
                     // Смена сети таким поводом НЕ является: узлы при этом
                     // ни при чём, виноват канал.
+                    //
+                    // В ФОНЕ, А НЕ ПОПЕРЁК ОТКАЗА. Запрос идёт до трёх
+                    // адресов API со сроком обхода 10 с, и на сети, где
+                    // сервер закрыт, он весь этот срок и съедал — человек
+                    // ждал причину отказа лишние десять секунд. Новый список
+                    // нужен следующей попытке, а не этой.
                     if (!networkChanged()) {
-                        try {
-                            Params.refreshAfterAllFailed()
-                        } catch (t: Throwable) {
-                            TunnelLog.add("параметры: запрос сорвался (${t.message})")
+                        thread(name = "meridian-params-after-fail") {
+                            try {
+                                Params.refreshAfterAllFailed()
+                            } catch (t: Throwable) {
+                                TunnelLog.add("параметры: запрос сорвался (${t.message})")
+                            }
                         }
                     }
                     throw e
+                }
+                // ОСТАНОВИЛИ, ПОКА ШЛА ЛЕСТНИЦА, А ОНА УСПЕЛА ПОДНЯТЬСЯ.
+                // Engine.stop() во время резолва имени сессии ещё не
+                // видит (её нет), и Connect доходит до конца. Туннель
+                // человеку уже не нужен — гасим сессию и выходим, не
+                // запоминая путь.
+                if (shuttingDown.get()) {
+                    try { Engine.stop() } catch (t: Throwable) { }
+                    TunnelLog.event("подключение остановлено нажатием")
+                    return@thread
                 }
                 TunnelLog.add("выдан адрес $assigned")
                 if (Engine.captchaCount() > 0) {
@@ -1136,6 +1197,15 @@ class MeridianVpnService : VpnService() {
                     // держится, сеть набирает вес в сторону «мимо UDP».
                     PathMemory.noteRelayWon(this, netKey)
                     TunnelLog.add("поднялись через $winner — не запоминаю, память держим для UDP-прямых")
+                    // ЗАПОМНЕННАЯ UDP-СТУПЕНЬ НЕ ДОВЕЗЛА — ЗАБЫВАЕМ. Раньше её
+                    // забывали только при провале всей лестницы, а когда
+                    // выручал поток, она оставалась первой и в следующий раз
+                    // снова съедала секунды (лог 24.09 20:40: запомненная F
+                    // прошла AUTH и оглохла на метке, подъём взял поток G).
+                    if (knownId != null) {
+                        PathMemory.forgetRung(this, netKey)
+                        TunnelLog.add("запомненная ступень не довезла — забыта")
+                    }
                 }
 
                 // ПОДНЯЛИСЬ ПОТОКОМ — ЗАПОМИНАЕМ, ЧЕЙ ЭТО БУДЕТ ПРОМАХ,
@@ -1246,6 +1316,12 @@ class MeridianVpnService : VpnService() {
 
                 notePrivateDns()
 
+                // Второй рубеж того же: нажали между Connect и establish.
+                if (shuttingDown.get()) {
+                    try { Engine.stop() } catch (t: Throwable) { }
+                    TunnelLog.event("подключение остановлено нажатием")
+                    return@thread
+                }
                 val pfd = builder.establish()
                     ?: throw IllegalStateException("establish() вернул null — разрешение отозвано?")
 
@@ -1262,7 +1338,9 @@ class MeridianVpnService : VpnService() {
                 // ЗАПОМИНАЕМ АДРЕС ТОЛЬКО ТЕПЕРЬ, после подтверждённого
                 // Start() — до этого момента известно лишь, что резолв
                 // что-то нашёл, а не что это «что-то» реально работает.
-                val via = Engine.resolvedVia()
+                // Подключились по адресу из кэша — движок резолва не делал,
+                // и источник знаем только мы (connectEngine).
+                val via = Engine.resolvedVia().ifEmpty { edgeVia }
                 if (via.isNotEmpty()) EdgeCache.set(this, Engine.resolvedAddr())
                 TunnelLog.event(
                     "подключено, путь ${Paths.letterOf(Engine.winner())}" +
@@ -1272,6 +1350,8 @@ class MeridianVpnService : VpnService() {
                 // Всё получилось — прежней жалобе на экране больше не
                 // место. Планета сама покажет, что туннель работает.
                 Notice.clear()
+                lastFailAdvice = null
+                clearFailureNotice()
                 // Туннель встал — значит, введённый ключ подошёл шлюзу.
                 // Отдельной проверки на сервере нет и не нужно: адрес в
                 // туннеле выдаётся по хешу пароля, и с неверным ключом мы
@@ -1283,14 +1363,26 @@ class MeridianVpnService : VpnService() {
                 main.post { reconnectFails = 0 }
             } catch (e: Throwable) {
                 TunnelLog.add("ошибка: ${e.message}")
+                // Отказ из-за нажатия «остановить» — не отказ: ни причины
+                // на экране, ни уведомления, ни перепроверки ключа.
+                if (shuttingDown.get()) {
+                    TunnelLog.event("подключение остановлено нажатием")
+                    return@thread
+                }
                 // НЕТ СЕТИ — ЭТО «СЕТИ НЕТ», а не «подключиться не
                 // удалось». Баг тестировщика 29.08: во время звонка на
                 // сетях без VoLTE данные приостанавливаются — интерфейс
                 // есть, но пакеты не ходят, туннель не встаёт. Общий
                 // текст врал про причину; проверяем сеть и называем прямо.
                 val noNet = !hasUsableNetwork()
-                val reason = if (noNet) "сети нет" else humanReason(e)
+                // Совет по коду причины из движка перебивает общую фразу:
+                // «подключиться не удалось» не говорит, что делать, а
+                // «добавьте ссылку на ВК-звонок» — говорит.
+                val advice = if (noNet) null else failureAdvice(failKind)
+                val reason = if (noNet) "сети нет" else advice ?: humanReason(e)
+                if (failKind.isNotEmpty()) TunnelLog.add("код причины: $failKind")
                 TunnelLog.event("не удалось: $reason")
+                lastFailAdvice = advice
                 // Проверяли ключ — он не подтвердился. Сохранённый ключ
                 // при этом не трогаем: непроверенный живёт только в памяти.
                 Access.dropPending(e.message ?: "подключение не удалось")
@@ -1303,11 +1395,18 @@ class MeridianVpnService : VpnService() {
                 // Только когда сеть НЕ менялась: при смене сети виноват
                 // канал, а не ключ, и спрашивать про него незачем.
                 // Мы уже на фоновом потоке, звать можно прямо здесь.
+                //
+                // В ФОНЕ, по той же причине, что запрос параметров выше: до
+                // 10 с на закрытой сети, а причину отказа человек должен
+                // увидеть сразу. Плохой вердикт ключа сам сменит строку на
+                // экране (Access ставит Notice.problem), и он точнее нашей.
                 if (Access.hasKey() && !networkChanged()) {
-                    try {
-                        Access.refreshKey(force = true)
-                    } catch (t: Throwable) {
-                        TunnelLog.add("перепроверка ключа сорвалась: ${t.message}")
+                    thread(name = "meridian-key-after-fail") {
+                        try {
+                            Access.refreshKey(force = true)
+                        } catch (t: Throwable) {
+                            TunnelLog.add("перепроверка ключа сорвалась: ${t.message}")
+                        }
                     }
                 }
 
@@ -1391,13 +1490,17 @@ class MeridianVpnService : VpnService() {
                     // повтор. Это и есть тот случай, ради которого
                     // строка состояния существует, — иначе человек
                     // видит неподвижную планету и не знает почему.
-                    Notice.problem(
-                        when {
-                            noNet -> "Нет сети"
-                            standsAlone(e) -> reason
-                            else -> "Не удалось подключиться: $reason"
-                        }
-                    )
+                    val text = when {
+                        noNet -> "Нет сети"
+                        advice != null -> advice
+                        standsAlone(e) -> reason
+                        else -> "Не удалось подключиться: $reason"
+                    }
+                    Notice.problem(text)
+                    // Совет — ещё и уведомлением: подключение часто
+                    // запускают с плитки в шторке, и строку на главном
+                    // экране тогда никто не увидит.
+                    if (advice != null) notifyFailure(text)
                     stopTunnel()
                 }
             } finally {
@@ -1735,7 +1838,15 @@ class MeridianVpnService : VpnService() {
                     "$quickDrops раз подряд туннель падал сразу после подъёма"
                 else "$reconnectFails попыток подряд не удались"
                 TunnelLog.add("сдаюсь: $why")
-                Notice.problem("Связь потеряна: $why")
+                // Если последняя попытка знала, ЧТО делать, — говорим это,
+                // а не только сколько раз не вышло.
+                val advice = lastFailAdvice
+                if (advice != null && quickDrops < QUICK_DROP_LIMIT) {
+                    Notice.problem(advice)
+                    notifyFailure(advice)
+                } else {
+                    Notice.problem("Связь потеряна: $why")
+                }
                 reconnectPending.set(false)
                 quickDrops = 0
                 shutdownService()
@@ -1915,6 +2026,84 @@ class MeridianVpnService : VpnService() {
      * следующей ступени внутри ТОЙ ЖЕ попытки, и её присутствие в
      * лестнице с самого начала — единственный способ это гарантировать.
      */
+    /**
+     * Откуда взят адрес шлюза у последнего connectEngine: "кэш", "резолв
+     * (кэш устарел)" или "" (адрес дал сам движок, см. Engine.resolvedVia).
+     */
+    @Volatile
+    private var edgeVia: String = ""
+
+    /**
+     * Engine.connect с именем шлюза, но БЕЗ ОЖИДАНИЯ РЕЗОЛВА, когда рабочий
+     * адрес уже известен.
+     *
+     * Было: каждое подключение сперва резолвило Config.EDGE_HOST (DoH, потом
+     * системный DNS) и только потом шло на лестницу, хотя адрес почти всегда
+     * тот же, что в прошлый раз. Стало: есть адрес в EdgeCache (а туда
+     * пишется только адрес, на котором туннель реально встал) — подключаемся
+     * по нему сразу, а свежий резолв идёт ПАРАЛЛЕЛЬНО.
+     *
+     * КЭШ УСТАРЕЛ — ВТОРОЙ ЗАХОД. Лестница по кэшу не поднялась, а свежий
+     * резолв дал другой адрес — повторяем на нём. Не повторяем, когда
+     * виноват не адрес: сменилась сеть или шлюз ответил отказом (ключ, пул)
+     * — на новом адресе было бы то же самое.
+     *
+     * Кэша нет — прежний путь: резолв внутри Connect.
+     */
+    private fun connectEngine(
+        ladder: Ladder, deviceId: String, protector: Protector, guard: NetworkGuard,
+        logger: Logger, listener: StateListener,
+    ): String {
+        edgeVia = ""
+        val cached = EdgeCache.get(this)
+        if (cached.isNullOrEmpty()) {
+            return Engine.connect(
+                Config.EDGE_HOST, "", ladder, Access.password(), deviceId,
+                protector, guard, CaptchaGate.solver(this), logger, listener
+            )
+        }
+
+        TunnelLog.add("адрес шлюза из кэша: $cached — подключаюсь сразу, имя проверяю параллельно")
+        val fresh = AtomicReference<String?>(null)
+        val resolved = CountDownLatch(1)
+        thread(name = "meridian-edge-resolve") {
+            try {
+                val a = Engine.resolveName(Config.EDGE_HOST, protector, logger)
+                if (a.isNotEmpty()) fresh.set(a)
+            } catch (e: Throwable) {
+                TunnelLog.add("параллельный резолв сорвался: ${e.message}")
+            } finally {
+                resolved.countDown()
+            }
+        }
+
+        try {
+            val addr = Engine.connect(
+                cached, "", ladder, Access.password(), deviceId,
+                protector, guard, CaptchaGate.solver(this), logger, listener
+            )
+            edgeVia = "кэш"
+            return addr
+        } catch (e: Throwable) {
+            val kind = try { Engine.failureKind() } catch (t: Throwable) { "" }
+            if (kind == Engine.FailNetwork || kind == Engine.FailRefused ||
+                e.message.orEmpty().contains("уже поднята") || shuttingDown.get()
+            ) throw e
+            // Резолв к этому времени почти всегда кончился: лестница длиннее
+            // его срока (DoH 4 с + системный DNS 2 с). Предел — на всякий случай.
+            resolved.await(EDGE_RESOLVE_WAIT_MS, TimeUnit.MILLISECONDS)
+            val f = fresh.get()
+            if (f == null || f == cached) throw e
+            TunnelLog.add("адрес из кэша устарел ($cached → $f) — повторяю лестницу на новом")
+            val addr = Engine.connect(
+                f, "", ladder, Access.password(), deviceId,
+                protector, guard, CaptchaGate.solver(this), logger, listener
+            )
+            edgeVia = "резолв, кэш устарел"
+            return addr
+        }
+    }
+
     private fun buildLadder(
         known: String?,
         skipDirect: Boolean = false,
@@ -2260,6 +2449,60 @@ class MeridianVpnService : VpnService() {
             NotificationManager.IMPORTANCE_LOW
         )
         mgr.createNotificationChannel(channel)
+    }
+
+    /**
+     * Уведомление «почему не подключилось и что сделать».
+     *
+     * Свой канал, а не канал туннеля: у того IMPORTANCE_LOW (значок без
+     * звука, так и нужно для постоянного уведомления), а совет человек
+     * должен заметить. Одно на всё: новое заменяет прежнее, удачное
+     * подключение его убирает (clearFailureNotice).
+     *
+     * Без разрешения на уведомления (Android 13+) notify молча ничего не
+     * покажет — остаётся строка на главном экране.
+     */
+    private fun notifyFailure(text: String) {
+        try {
+            val mgr = getSystemService(NotificationManager::class.java) ?: return
+            if (mgr.getNotificationChannel(FAIL_CHANNEL_ID) == null) {
+                mgr.createNotificationChannel(
+                    NotificationChannel(
+                        FAIL_CHANNEL_ID,
+                        "Причина отказа подключения",
+                        NotificationManager.IMPORTANCE_DEFAULT,
+                    )
+                )
+            }
+            val open = PendingIntent.getActivity(
+                this, 0,
+                Intent(this, MainActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+            )
+            mgr.notify(
+                FAIL_NOTIFICATION_ID,
+                Notification.Builder(this, FAIL_CHANNEL_ID)
+                    .setContentTitle("Meridian не подключился")
+                    .setContentText(text)
+                    .setStyle(Notification.BigTextStyle().bigText(text))
+                    .setSmallIcon(R.drawable.ic_meridian_notify)
+                    .setContentIntent(open)
+                    .setAutoCancel(true)
+                    .build()
+            )
+            TunnelLog.add("уведомление о причине отказа показано")
+        } catch (e: Throwable) {
+            TunnelLog.add("уведомление о причине отказа не показалось: ${e.message}")
+        }
+    }
+
+    private fun clearFailureNotice() {
+        try {
+            getSystemService(NotificationManager::class.java)?.cancel(FAIL_NOTIFICATION_ID)
+        } catch (e: Throwable) {
+            // Нечего убирать — не беда.
+        }
     }
 
     private fun buildNotification(): Notification {

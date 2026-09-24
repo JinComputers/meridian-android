@@ -148,7 +148,13 @@ func (s *session) raise(
 	// Флаг появился до потоков (0.1.102), и слово «прямые» в его имени
 	// значило именно UDP-прямые. Теперь оно значит то же и на деле.
 	if c.transport == transTCP || c.transport == transTLS {
-		return s.raiseStream(ctx, gateway, c, password, prot, budget)
+		r, err := s.raiseStream(ctx, gateway, c, password, prot, budget)
+		// Пиновленный TLS поднялся — сервер из этой сети виден (failure.go).
+		// Голый TCP не в счёт: connect может принять и посредник.
+		if err == nil && c.transport == transTLS {
+			s.reached.Store(true)
+		}
+		return r, err
 	}
 
 	if failDirect {
@@ -195,6 +201,8 @@ func (s *session) raise(
 			udp.Close()
 			return nil, err
 		}
+		// DTLS прошёл с отпечатком шлюза — сервер из этой сети виден.
+		s.reached.Store(true)
 	} else {
 		// Без DTLS рукопожатия нет вовсе: obfs — единственный слой,
 		// и ступень готова к AUTH сразу после protect.
@@ -243,7 +251,7 @@ func protectControl(prot Protector, logf func(string, ...interface{}), name stri
 // поиск маршрута пойдёт по туннелю и вернёт туннельный адрес — то
 // самое, что мы и лечим.
 func (s *session) sourceFor(ctx context.Context, prot Protector, peer, name string) string {
-	d := &net.Dialer{Control: protectControl(prot, s.logf, name+" (проба)")}
+	d := &net.Dialer{Control: protectDialControl(prot, s.logf, name+" (проба)")}
 	c, err := d.DialContext(ctx, "udp4", peer)
 	if err != nil {
 		s.logf("%s: пробу адреса источника сделать не вышло: %v", name, err)
@@ -367,6 +375,25 @@ func (s *session) race(
 	// целиком: ступени идут через один маршрут по умолчанию.
 	var netGone atomic.Bool
 
+	// ОТЛОЖЕННЫЙ СТАРТ (candidate.delay): фора запомненной ступени. Кто
+	// стартует сразу, тот «ведущий»; откажут все ведущие раньше срока —
+	// отложенные стартуют немедленно, ждать форы не перед кем.
+	var maxDelay time.Duration
+	var leadLeft atomic.Int32
+	for _, c := range cands {
+		if c.delay > maxDelay {
+			maxDelay = c.delay
+		}
+		if c.delay == 0 {
+			leadLeft.Add(1)
+		}
+	}
+	startNow := make(chan struct{})
+	var startOnce sync.Once
+	if leadLeft.Load() == 0 {
+		close(startNow)
+	}
+
 	s.logf("гонка транспорта: ступеней %d, срок %s, фора без DTLS %v",
 		len(cands), budget.Round(time.Millisecond), hasDTLS)
 	started := time.Now()
@@ -376,7 +403,24 @@ func (s *session) race(
 		go func(c candidate) {
 			defer wg.Done()
 
+			if c.delay > 0 {
+				t := time.NewTimer(c.delay)
+				select {
+				case <-t.C:
+				case <-startNow:
+					t.Stop()
+				case <-raceCtx.Done():
+					// Гонка кончилась до нашего старта — ни сокета, ни
+					// ошибки: ступень не пробовалась.
+					t.Stop()
+					return
+				}
+			}
+
 			r, err := s.raise(raceCtx, gateway, c, password, prot, failDirect, budget)
+			if err != nil && c.delay == 0 && leadLeft.Add(-1) == 0 {
+				startOnce.Do(func() { close(startNow) })
+			}
 			if err != nil {
 				if isNetworkGone(err) {
 					// Не отказ ступени, а уход сети. Остальным ловить
@@ -400,7 +444,9 @@ func (s *session) race(
 			//
 			// Кроме уже пробованной: ей эту фору уже отдали, когда шли
 			// к ней первой и без гонки. См. candidate.spent.
-			if !c.useDTLS && hasDTLS && !c.spent {
+			// И кроме запомненной в её первом заходе: выбор за неё уже
+			// сделала память пути, уступать ей некому.
+			if !c.useDTLS && hasDTLS && !c.spent && !(c.remembered && c.delay == 0) {
 				// Запоминаем ДО сна: если сейчас никто ещё не победил, а
 				// после сна победил — значит первенство отдала именно
 				// фора, а не чужая расторопность.
@@ -483,7 +529,8 @@ func (s *session) race(
 	// ВОТ ОНА, ГАРАНТИЯ. Ждём завершения ВСЕХ участников, включая
 	// проигравших. Каждый закрывает ресурсы до wg.Done(), значит после
 	// этой строки чужих живых сокетов не осталось ни одного.
-	if !waitTimeout(&wg, budget+raceTeardownLimit) {
+	// Отложенный старт сдвигает конец срока отложенных на свою фору.
+	if !waitTimeout(&wg, maxDelay+budget+raceTeardownLimit) {
 		cancel()
 		// Победителя тоже гасим: отправлять AUTH, не зная состояния
 		// остальных, нельзя ни при каких обстоятельствах.

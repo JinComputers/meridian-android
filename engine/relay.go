@@ -142,6 +142,13 @@ func (s *session) raiseRelay(
 		return nil, errRelayNoCreds
 	}
 
+	// Сокет udp не соединён, и Control его не видит адрес TURN-сервера:
+	// платформе, которой нужны исключения из маршрутов (ExcludeHost, см.
+	// exclude.go), называем его здесь, ДО первого пакета.
+	if host, _, err := net.SplitHostPort(addr); err == nil {
+		excludeHost(prot, host)
+	}
+
 	s.logf("%s: беру TURN-аллокацию на %s (%s)", c.name, addr, whence)
 	client, err := turn.NewClient(&turn.ClientConfig{
 		STUNServerAddr: addr,

@@ -113,6 +113,10 @@ type flowConn struct {
 	buf []byte
 	off int
 
+	// oversize — сколько пакетов крупнее потолка отброшено за соединение.
+	// Пишет только Read, то есть одна горутина, как и buf/off.
+	oversize int
+
 	// Запись зовут до slotsMax горутин разом.
 	wmu  sync.Mutex
 	wbuf []byte
@@ -133,11 +137,28 @@ func (c *flowConn) Read(p []byte) (int, error) {
 				return 0, c.structural("хвост пачки короче поля длины")
 			}
 			n := int(c.buf[c.off])<<8 | int(c.buf[c.off+1])
-			if n == 0 || n > flowFrameMax {
-				return 0, c.structural(fmt.Sprintf("длина кадра %d вне 1..%d", n, flowFrameMax))
+			if n == 0 {
+				return 0, c.structural("нулевая длина кадра")
 			}
 			if c.off+2+n > len(c.buf) {
 				return 0, c.structural("кадр не помещается в пачку")
+			}
+			// КРУПНЫЙ ПАКЕТ ОТ ПЛАТФОРМЫ — НЕ ПОВОД РВАТЬ ПОТОК. Длина честная,
+			// кадр целиком в пачке, разметка цела: пакет больше tunMTU+80 просто
+			// не пройдёт туннелем (чужое приложение с MSS от физического
+			// интерфейса; первый живой прогон Windows: 1360 байт при потолке
+			// 1280). Роняем один пакет и читаем дальше: для TCP это потеря,
+			// которая лечится повтором. Рвать по-прежнему надо, когда разметка
+			// сама негодна (нулевая длина, кадр за пределами пачки): там мусор,
+			// а не большой пакет.
+			if n > flowFrameMax {
+				c.off += 2 + n
+				c.oversize++
+				if c.logf != nil && (c.oversize == 1 || c.oversize%100 == 0) {
+					c.logf("пакет от платформы %d байт больше потолка %d — отброшен (всего %d); "+
+						"MTU интерфейса туннеля не должен превышать MTU движка", n, flowFrameMax, c.oversize)
+				}
+				continue
 			}
 			if n > len(p) {
 				return 0, c.structural(fmt.Sprintf("кадр %d байт не влезает в буфер %d", n, len(p)))

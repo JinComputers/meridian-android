@@ -100,6 +100,12 @@ var (
 	// моменту существует. См. ResolvedAddr/ResolvedVia.
 	lastResolvedAddr string
 	lastResolvedVia  string
+
+	// Шлюз и маска (хекс) из последнего ответа OK на AUTH. Пишутся auth(), читает
+	// только desktopinfo.go (сборка не для android/ios): наружу через gomobile
+	// не выходят.
+	lastAuthGateway atomic.Value
+	lastAuthMaskHex atomic.Value
 )
 
 // Connect проходит лестницу транспорта и поднимает сессию на первой
@@ -127,8 +133,10 @@ func Connect(gateway string, cachedFallback string, ladder *Ladder, password str
 		return "", errors.New("лестница пуста: ни одной ступени")
 	}
 
+	setFailure(FailNone)
 	resolved, via, err := resolveGateway(gateway, cachedFallback, prot, log)
 	if err != nil {
+		setFailure(FailResolve)
 		return "", err
 	}
 
@@ -156,6 +164,11 @@ func Connect(gateway string, cachedFallback string, ladder *Ladder, password str
 	// значит s.stop() отменит s.ctx, а от него наследуются сроки ступеней.
 	addr, err := s.climb(resolved, ladder, password, deviceID, prot)
 	if err != nil {
+		kind := s.failureKind(err)
+		setFailure(kind)
+		if log != nil {
+			log.Log("причина отказа: " + kind)
+		}
 		s.stop("")
 		return "", err
 	}
