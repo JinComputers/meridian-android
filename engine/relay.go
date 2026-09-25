@@ -89,7 +89,18 @@ func (l *relayLink) Close() error {
 func (s *session) raiseRelay(
 	ctx context.Context, gateway string, c candidate, cr turnCreds, password string,
 	prot Protector,
-) (*rung, error) {
+) (r *rung, err error) {
+	// Релей не принял комплект — выбрасываем его из общего кэша
+	// (credsShared): следующая попытка, в этой сессии или в новой, пойдёт
+	// за свежим, а не упрётся в тот же отказ до конца срока комплекта.
+	defer func() {
+		if err != nil && cr.hash != "" && errors.Is(err, errRelayAlloc) {
+			forgetSharedCreds(cr.hash)
+			s.logf("%s: комплект кредов по хешу %s выброшен из кэша — релей его не принял",
+				c.name, shortHash(cr.hash))
+		}
+	}()
+
 	// Адрес может прийти и от цепочки, поэтому здесь проверяем только
 	// креды: без них идти некуда в любом случае.
 	if cr.user == "" || cr.pass == "" {

@@ -59,6 +59,7 @@ class MainActivity : ComponentActivity() {
         TransportSetting.attach(this)
         HashStore.attach(this)
         SplitTunnel.attach(this)
+        RuDirect.attach(this)
         Access.attach(this)
         ApiClient.attach(this)
         Params.attach(this)
@@ -70,6 +71,10 @@ class MainActivity : ComponentActivity() {
             TunnelLog.add("ПРОШЛЫЙ ЗАПУСК УПАЛ: $it")
             CrashLog.clear(this)
         }
+
+        // Ключ по ссылке meridian://key/… — только запоминаем, применит его
+        // человек кнопкой на главном экране (KeyLink, KeyLinkPrompt).
+        KeyLink.take(intent)
 
         // Будильники живут в системе, но теряются при перезагрузке.
         // Приёмник BOOT_COMPLETED их восстанавливает; это здесь —
@@ -91,6 +96,12 @@ class MainActivity : ComponentActivity() {
                 Access.upgradeLocalTrial()
             } catch (e: Throwable) {
                 TunnelLog.add("перепроверка ключа сорвалась: ${e.message}")
+            }
+            // Ссылки VK — не чаще раза в сутки, до первой живой (LinkWatch).
+            try {
+                LinkWatch.maybeCheck(this)
+            } catch (e: Throwable) {
+                TunnelLog.add("фоновая проверка ссылок сорвалась: ${e.message}")
             }
         }
 
@@ -206,6 +217,11 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        KeyLink.take(intent)
     }
 }
 
@@ -330,6 +346,12 @@ fun TunnelScreen(modifier: Modifier = Modifier, onSettings: () -> Unit = {}) {
         }
 
         AccessBlock(onConnect = connect)
+
+        // Ключ, пришедший ссылкой из бота, — ждёт подтверждения.
+        KeyLinkPrompt(onConnect = connect)
+
+        // Банки мимо VPN — предложение один раз (BankOffer).
+        BankOffer()
 
         // Уведомление о новой версии (просьба владельца 14.09). В сборке
         // для Play — пусто, и не веткой, а отсутствием кода: см.

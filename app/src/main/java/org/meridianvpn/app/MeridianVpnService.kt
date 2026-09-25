@@ -58,6 +58,10 @@ class MeridianVpnService : VpnService() {
         // Сколько ждать параллельного резолва после неудачи по кэшу.
         private const val EDGE_RESOLVE_WAIT_MS = 7000L
 
+        // Подсказка при долгом подъёме, см. startTunnel.
+        private const val SLOW_HINT_MS = 5000L
+        private const val SLOW_HINT = "Подключение занимает больше обычного — пробую запасные пути"
+
         /**
          * Пауза перед ПЕРВОЙ попыткой переподключения.
          *
@@ -555,6 +559,7 @@ class MeridianVpnService : VpnService() {
         TransportSetting.attach(this)
         HashStore.attach(this)
         SplitTunnel.attach(this)
+        RuDirect.attach(this)
         Access.attach(this)
         ApiClient.attach(this)
         Params.attach(this)
@@ -699,6 +704,18 @@ class MeridianVpnService : VpnService() {
 
         val gen = generation.incrementAndGet()
         val startedAt = System.currentTimeMillis()
+
+        // ДОЛГИЙ ПОДЪЁМ — ОДНА ТИХАЯ СТРОКА (просьба владельца 25.09).
+        // Обычно туннель встаёт за 1–3 с, и строка под планетой молчит.
+        // Если прошло SLOW_HINT_MS, а подъём всё идёт (путь через VK-звонок
+        // занимает 5–15 с), человек видит, почему планета крутится долго.
+        // Снимает её любой исход: успех — Notice.clear(), отказ — своя
+        // строка поверх, остановка — shutdownService().
+        main.postDelayed({
+            if (generation.get() == gen && connecting.get() && !TunnelState.connected.value) {
+                Notice.say(SLOW_HINT)
+            }
+        }, SLOW_HINT_MS)
         // ВЕРСИЯ В ПЕРВОЙ ЖЕ СТРОКЕ ПОДКЛЮЧЕНИЯ.
         //
         // 27.08 по логу в 18:20 нельзя было сказать, какая сборка на
@@ -1237,10 +1254,13 @@ class MeridianVpnService : VpnService() {
                 val mtu = Engine.mtu()
                 TunnelLog.add("MTU туннеля: $mtu")
 
+                // Туннель собирается функцией, а не один раз: если система не
+                // примет маршруты «RU-адреса напрямую» (их тысячи), собираем
+                // заново без них — см. establish ниже.
+                fun makeBuilder(ru: Boolean): Builder {
                 val builder = Builder()
                     .setSession("Meridian")
                     .addAddress(address, prefix)
-                    .addRoute("0.0.0.0", 0)
                     // ДВА РЕЗОЛВЕРА, А НЕ ОДИН.
                     //
                     // Оба публичные и оба спрашиваются ВНУТРИ туннеля:
@@ -1255,6 +1275,9 @@ class MeridianVpnService : VpnService() {
                     // работы 04.09. Своего резолвера у нас нет — кот 2
                     // проверил на VPS, 53-й порт не слушает никто.
                     .setMtu(mtu)
+                // Маршрут по умолчанию — через RuDirect: без переключателя это
+                // прежний 0.0.0.0/0, с ним — он же минус российские блоки.
+                RuDirect.addRoutes(builder, this@MeridianVpnService, ru)
                 for (s in DNS_SERVERS) builder.addDnsServer(s)
 
                 // ОБЪЯВЛЕННЫЕ РЕЗОЛВЕРЫ — В ЛОГ, ИЗ ТОГО ЖЕ СПИСКА.
@@ -1312,7 +1335,12 @@ class MeridianVpnService : VpnService() {
                 //
                 // Здесь же наше собственное приложение выводится из
                 // туннеля — разбор в SplitTunnel.apply().
-                SplitTunnel.apply(builder, this)
+                SplitTunnel.apply(builder, this@MeridianVpnService, ru)
+                return builder
+                }
+
+                val ruWanted = RuDirect.enabled()
+                val builder = makeBuilder(ruWanted)
 
                 notePrivateDns()
 
@@ -1322,8 +1350,20 @@ class MeridianVpnService : VpnService() {
                     TunnelLog.event("подключение остановлено нажатием")
                     return@thread
                 }
-                val pfd = builder.establish()
-                    ?: throw IllegalStateException("establish() вернул null — разрешение отозвано?")
+                val pfd = try {
+                    builder.establish()
+                } catch (e: Throwable) {
+                    // Тысячи маршрутов могут не пролезть в один вызов к системе
+                    // (предел размера передачи между процессами) — тогда туннель
+                    // без RU-исключений лучше, чем никакого.
+                    if (!ruWanted) throw e
+                    TunnelLog.add(
+                        "RU-адреса напрямую: система не приняла маршруты " +
+                            "(${e.javaClass.simpleName}: ${e.message}) — поднимаю туннель без них"
+                    )
+                    Notice.say("RU-адреса напрямую не применились на этом телефоне — весь трафик идёт через VPN")
+                    makeBuilder(false).establish()
+                } ?: throw IllegalStateException("establish() вернул null — разрешение отозвано?")
 
                 // KILL SWITCH: заглушку этот establish() уже сменил сам
                 // (Android заменяет интерфейс службы атомарно при
@@ -1358,6 +1398,7 @@ class MeridianVpnService : VpnService() {
                 // до этой строки просто не дошли бы.
                 Access.confirmPending()
                 TunnelState.setConnected(true)
+                updateNotification(connected = true)
                 connectedAt = System.currentTimeMillis()
                 // Поднялись — счётчик неудач обнуляется.
                 main.post { reconnectFails = 0 }
@@ -1943,6 +1984,8 @@ class MeridianVpnService : VpnService() {
      */
     private fun shutdownService() {
         if (!shuttingDown.compareAndSet(false, true)) return
+        // Подсказка о долгом подъёме к погашенной службе больше не относится.
+        if (Notice.text.value == SLOW_HINT) Notice.clear()
         // KILL SWITCH СНИМАЕТСЯ ЗДЕСЬ, И ЭТО ГРАНИЦА ЕГО ЗАЩИТЫ.
         //
         // Сюда ведут три дороги: явное «Отключить», сдача после
@@ -2505,7 +2548,7 @@ class MeridianVpnService : VpnService() {
         }
     }
 
-    private fun buildNotification(): Notification {
+    private fun buildNotification(connected: Boolean = false): Notification {
         val open = PendingIntent.getActivity(
             this, 0,
             Intent(this, MainActivity::class.java),
@@ -2528,12 +2571,37 @@ class MeridianVpnService : VpnService() {
         if (Build.VERSION.SDK_INT >= 31) {
             b.setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE)
         }
+        // КНОПКА «ОТКЛЮЧИТЬ» ПРЯМО В УВЕДОМЛЕНИИ (просьба владельца 25.09).
+        // Та же команда, что у планеты: во время подъёма она его
+        // останавливает, при поднятом туннеле — отключает. Раньше ради
+        // этого приходилось открывать приложение.
+        val stop = PendingIntent.getService(
+            this, 1,
+            Intent(this, MeridianVpnService::class.java).setAction(ACTION_DISCONNECT),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
         return b
             .setContentTitle("Meridian")
-            .setContentText("Туннель активен")
+            // Пока идёт подъём — «Подключаюсь…», а не «Туннель активен»:
+            // туннеля ещё нет, и надпись врала бы. Обновляется в
+            // updateNotification() после установки туннеля.
+            .setContentText(if (connected) "Туннель активен" else "Подключаюсь…")
             .setSmallIcon(R.drawable.ic_meridian_notify)
             .setContentIntent(open)
             .setOngoing(true)
+            .addAction(
+                Notification.Action.Builder(null, "Отключить", stop).build()
+            )
             .build()
+    }
+
+    /** Перерисовать уведомление службы под текущее состояние туннеля. */
+    private fun updateNotification(connected: Boolean) {
+        try {
+            getSystemService(NotificationManager::class.java)
+                ?.notify(NOTIFICATION_ID, buildNotification(connected))
+        } catch (e: Throwable) {
+            TunnelLog.add("уведомление туннеля не обновилось: ${e.message}")
+        }
     }
 }

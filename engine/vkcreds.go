@@ -155,10 +155,10 @@ var (
 	errVKAllFailed = errors.New("VK не дал кредов")
 )
 
-// vkCache — комплекты, добытые в этой сессии.
+// vkCache — состояние хешей в этой сессии. Сами комплекты кредов живут
+// дольше сессии — в credsShared ниже.
 type vkCache struct {
 	mu    sync.Mutex
-	creds map[string]cachedCreds
 	state map[string]string
 
 	// deferred — хеши, отвалившиеся ПО СРОКУ. Не «мёртвые»: до них не
@@ -174,9 +174,43 @@ type cachedCreds struct {
 
 func newVKCache() *vkCache {
 	return &vkCache{
-		creds: map[string]cachedCreds{},
 		state: map[string]string{},
 	}
+}
+
+// credsShared — комплекты кредов VK НА ВЕСЬ ПРОЦЕСС, а не на сессию.
+//
+// Было: кэш жил в сессии, и каждое переподключение через релей заново
+// проходило цепочку VK из пяти шагов — секунды на подъём и главный повод
+// для капчи. Комплект годен vkCredsTTL и от сессии не зависит, поэтому
+// переживает её. Отметки «мёртвый»/«капча»/отсрочки остаются в vkCache,
+// то есть в сессии, как и были: новая сессия судит хеши заново.
+//
+// Комплект, на котором релей отказал (TURN-аллокация), выбрасывается —
+// forgetSharedCreds в raiseRelay, — иначе испорченный комплект держал бы
+// релей до конца своего срока уже во многих сессиях подряд.
+var credsShared = struct {
+	mu sync.Mutex
+	m  map[string]cachedCreds
+}{m: map[string]cachedCreds{}}
+
+func sharedCredsGet(hash string) (cachedCreds, bool) {
+	credsShared.mu.Lock()
+	defer credsShared.mu.Unlock()
+	c, ok := credsShared.m[hash]
+	return c, ok
+}
+
+func sharedCredsPut(hash string, c cachedCreds) {
+	credsShared.mu.Lock()
+	defer credsShared.mu.Unlock()
+	credsShared.m[hash] = c
+}
+
+func forgetSharedCreds(hash string) {
+	credsShared.mu.Lock()
+	defer credsShared.mu.Unlock()
+	delete(credsShared.m, hash)
 }
 
 // protectedHTTP — клиент, чьи сокеты исключены из туннеля.
@@ -367,7 +401,7 @@ func (s *session) fetchCreds(ctx context.Context, c candidate, batch int, prot P
 
 		cache.mu.Lock()
 		st := cache.state[hash]
-		got, ok := cache.creds[hash]
+		got, ok := sharedCredsGet(hash)
 		cache.mu.Unlock()
 
 		if st != hashOK {
@@ -434,7 +468,8 @@ func (s *session) fetchCreds(ctx context.Context, c candidate, batch int, prot P
 
 		if err == nil {
 			cache.mu.Lock()
-			cache.creds[hash] = cachedCreds{creds: creds, until: time.Now().Add(vkCredsTTL)}
+			creds.hash = hash
+			sharedCredsPut(hash, cachedCreds{creds: creds, until: time.Now().Add(vkCredsTTL)})
 			// Сработал — отсрочку и счётчик промахов забываем.
 			delete(cache.deferred, hash)
 			cache.mu.Unlock()

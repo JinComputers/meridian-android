@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"net"
+	"sync"
 	"syscall"
 )
 
@@ -39,8 +40,17 @@ func excludeHost(prot Protector, host string) {
 	if ip == nil || ip.IsUnspecified() {
 		return
 	}
+	// ПО ОДНОМУ ЗА РАЗ. Движок зовёт ExcludeHost из нескольких горутин
+	// сразу (DoH опрашивает резолверы параллельно, гонка ступеней,
+	// потоки), а платформа в нём правит таблицу маршрутов и о потоках
+	// ничего не обещала. Замок здесь снимает с неё эту заботу: вызовы
+	// приходят последовательно, как до параллельного DoH.
+	excludeMu.Lock()
+	defer excludeMu.Unlock()
 	he.ExcludeHost(host)
 }
+
+var excludeMu sync.Mutex
 
 // protectDialControl — protectControl для ИСХОДЯЩЕГО соединения (net.Dialer):
 // перед защитой сокета отдаёт платформе адрес назначения, который Go к этому
