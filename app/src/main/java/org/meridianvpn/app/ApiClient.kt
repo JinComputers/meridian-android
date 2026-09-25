@@ -258,6 +258,7 @@ object ApiClient {
         var lastWhy = "адресов нет"
         for (addr in ordered()) {
             var conn: HttpsURLConnection? = null
+            val t0 = System.currentTimeMillis()
             try {
                 val url = URL("https://${addr.host}:${addr.port}/v1/logs")
                 val net = underlying()
@@ -284,6 +285,13 @@ object ApiClient {
                 val text = (if (code < 400) conn.inputStream else conn.errorStream)
                     ?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: ""
                 rememberGood(addr.host)
+                // Что ответил сервер и как быстро — в лог, чтобы по нему было видно,
+                // ПОЧЕМУ приём не сработал (404 — ручки нет, 5xx — сбой и т. д.).
+                TunnelLog.add(
+                    "лог в поддержку: ${addr.host}:${addr.port} ответил $code за " +
+                        "${System.currentTimeMillis() - t0} мс" +
+                        (if (code == 200) "" else ", тело: " + text.take(120).replace("\n", " "))
+                )
                 return when (code) {
                     200 -> {
                         val t = try { JSONObject(text).optString("ticket") } catch (e: Throwable) { "" }
@@ -297,7 +305,10 @@ object ApiClient {
                 }
             } catch (e: Throwable) {
                 lastWhy = e.message ?: e.javaClass.simpleName
-                TunnelLog.add("API: ${addr.host} не принял лог ($lastWhy), пробую следующий")
+                TunnelLog.add(
+                    "лог в поддержку: ${addr.host}:${addr.port} не дозвонился за " +
+                        "${System.currentTimeMillis() - t0} мс (${e.javaClass.simpleName}: $lastWhy)"
+                )
             } finally {
                 try {
                     conn?.disconnect()
