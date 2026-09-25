@@ -227,6 +227,87 @@ object ApiClient {
         return Result.Unavailable(lastWhy)
     }
 
+    /** Итог отправки лога в поддержку (POST /v1/logs, договор кота 1, 25.09). */
+    sealed class LogResult {
+        /** Принят. ticket — номер обращения для человека, «M-XXXXX». */
+        data class Ticket(val ticket: String) : LogResult()
+
+        /** Слишком часто: 429, повторить через retryAfter секунд. */
+        data class TooOften(val retryAfter: Int) : LogResult()
+
+        /** Не приняли (413 — велик, 503 — хранилище полно, иное) или не дозвонились. */
+        data class Failed(val why: String) : LogResult()
+    }
+
+    /**
+     * Отправка лога поддержке. Те же адреса, тот же пин и та же сеть мимо
+     * туннеля, что у остальных запросов, — поэтому отдельной функцией, а не
+     * через call(): у call() параметры только в строке запроса и тела нет
+     * по договору, а здесь тело — сам лог.
+     *
+     * Тело — text/plain, сжатое gzip. Заголовки (договор кота 1):
+     * X-Meridian-Platform, X-Meridian-Version, X-Meridian-Key-Label (первые 8
+     * hex sha256 ключа; без ключа не шлём), X-Meridian-Device (4 знака).
+     *
+     * ЗВАТЬ ТОЛЬКО С ФОНОВОГО ПОТОКА.
+     */
+    fun postLog(gz: ByteArray, headers: Map<String, String>): LogResult {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            throw IllegalStateException("ApiClient.postLog с главного потока")
+        }
+        var lastWhy = "адресов нет"
+        for (addr in ordered()) {
+            var conn: HttpsURLConnection? = null
+            try {
+                val url = URL("https://${addr.host}:${addr.port}/v1/logs")
+                val net = underlying()
+                conn = (net?.openConnection(url) ?: url.openConnection()) as HttpsURLConnection
+                if (addr.pinned) {
+                    conn.sslSocketFactory = pinnedFactory()
+                    conn.hostnameVerifier = pinnedVerifier(addr.host)
+                }
+                conn.connectTimeout = CONNECT_MS
+                // Тело до ~сотни КБ после сжатия: на медленной сети
+                // READ_MS мало, даём втрое.
+                conn.readTimeout = READ_MS * 3
+                conn.useCaches = false
+                conn.requestMethod = "POST"
+                conn.doOutput = true
+                conn.setRequestProperty("Content-Type", "text/plain; charset=utf-8")
+                conn.setRequestProperty("Content-Encoding", "gzip")
+                conn.setRequestProperty("Accept", "application/json")
+                for ((k, v) in headers) conn.setRequestProperty(k, v)
+                conn.setFixedLengthStreamingMode(gz.size)
+                conn.outputStream.use { it.write(gz) }
+
+                val code = conn.responseCode
+                val text = (if (code < 400) conn.inputStream else conn.errorStream)
+                    ?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: ""
+                rememberGood(addr.host)
+                return when (code) {
+                    200 -> {
+                        val t = try { JSONObject(text).optString("ticket") } catch (e: Throwable) { "" }
+                        if (t.isNotEmpty()) LogResult.Ticket(t)
+                        else LogResult.Failed("ответ без номера обращения")
+                    }
+                    429 -> LogResult.TooOften(conn.getHeaderField("Retry-After")?.toIntOrNull() ?: 600)
+                    413 -> LogResult.Failed("лог слишком большой")
+                    503 -> LogResult.Failed("приём логов временно недоступен")
+                    else -> LogResult.Failed("служба ответила $code")
+                }
+            } catch (e: Throwable) {
+                lastWhy = e.message ?: e.javaClass.simpleName
+                TunnelLog.add("API: ${addr.host} не принял лог ($lastWhy), пробую следующий")
+            } finally {
+                try {
+                    conn?.disconnect()
+                } catch (e: Throwable) {
+                }
+            }
+        }
+        return LogResult.Failed("сервер недоступен ($lastWhy)")
+    }
+
     /** Один заход к одному адресу. */
     private fun one(
         addr: Address,
