@@ -10,7 +10,6 @@ import (
 
 func newTestCache(hashes []string) *vkCache {
 	c := &vkCache{
-		creds:    map[string]cachedCreds{},
 		state:    map[string]string{},
 		deferred: map[string]hashDefer{},
 	}
@@ -177,4 +176,23 @@ func (e fakeNetErr) Error() string { return "сетевая ошибка" }
 func (e fakeNetErr) Timeout() bool { return e.timeout }
 func (e fakeNetErr) Temporary() bool {
 	return false
+}
+
+// Комплект кредов переживает сессию (credsShared) и выбрасывается по
+// forgetSharedCreds — когда релей его не принял.
+func TestSharedCredsOutliveSession(t *testing.T) {
+	const h = "test-hash-shared"
+	defer forgetSharedCreds(h)
+	sharedCredsPut(h, cachedCreds{creds: turnCreds{user: "u", pass: "p", hash: h}, until: time.Now().Add(time.Minute)})
+
+	// Новая сессия — новый vkCache, а комплект на месте.
+	_ = newVKCache()
+	got, ok := sharedCredsGet(h)
+	if !ok || got.creds.user != "u" || got.creds.hash != h {
+		t.Fatalf("комплект не пережил сессию: %+v %v", got, ok)
+	}
+	forgetSharedCreds(h)
+	if _, ok := sharedCredsGet(h); ok {
+		t.Fatal("forgetSharedCreds не выбросил комплект")
+	}
 }

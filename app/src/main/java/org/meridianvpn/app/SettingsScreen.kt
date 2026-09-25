@@ -10,7 +10,15 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import android.content.Intent
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Switch
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -72,6 +80,11 @@ fun SettingsScreen(
             icon = { LogIcon() },
             onClick = onLogs,
         )
+
+        // ПЕРЕКЛЮЧАТЕЛЬ ПОД РАЗДЕЛАМИ (просьба владельца 25.09): в
+        // раздельное туннелирование его не положить — там уже список.
+        // Разбор — RuDirect.kt.
+        RuDirectRow()
 
         // Срок доступа И остаток пробного периода — ЗДЕСЬ, внизу
         // настроек, а не на главном экране (55.3 + просьба владельца):
@@ -151,6 +164,66 @@ private fun Entry(
         Column {
             Text(title, color = Brand.text, fontSize = 17.sp)
             Text(hint, color = Brand.dim, fontSize = 13.sp)
+        }
+    }
+    HorizontalDivider(color = Brand.sphere)
+}
+
+/**
+ * «RU-адреса напрямую» — строка с переключателем, в той же разметке, что
+ * разделы выше: заголовок 17, подсказка 13, разделитель.
+ *
+ * У поднятого туннеля маршруты и список приложений не меняются (свойство
+ * Android, как у раздельного туннелирования): предлагаем переподключиться.
+ */
+@Composable
+private fun RuDirectRow() {
+    val ctx = LocalContext.current
+    val on = RuDirect.on.value
+    var pending by remember { mutableStateOf(false) }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable {
+                RuDirect.setEnabled(!on)
+                pending = TunnelState.connected.value
+            }
+            .padding(vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text("RU-адреса напрямую", color = Brand.text, fontSize = 17.sp)
+            Text(
+                "банки, госуслуги, маркетплейсы и российские сайты — мимо VPN",
+                color = Brand.dim,
+                fontSize = 13.sp,
+            )
+        }
+        Switch(
+            checked = on,
+            onCheckedChange = {
+                RuDirect.setEnabled(it)
+                pending = TunnelState.connected.value
+            },
+        )
+    }
+    if (pending && TunnelState.connected.value) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "Туннель уже поднят — применится при следующем подключении",
+                color = Brand.edge,
+                fontSize = 12.sp,
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(onClick = {
+                pending = false
+                TunnelLog.add("RU-адреса напрямую изменены — переподключаюсь по просьбе")
+                ctx.startService(
+                    Intent(ctx, MeridianVpnService::class.java)
+                        .setAction(MeridianVpnService.ACTION_RECONNECT)
+                )
+            }) { Text("Сейчас") }
         }
     }
     HorizontalDivider(color = Brand.sphere)

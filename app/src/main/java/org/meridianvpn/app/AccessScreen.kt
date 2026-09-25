@@ -257,6 +257,62 @@ fun AccessOffer(
 }
 
 /**
+ * Подтверждение ключа, пришедшего ссылкой (KeyLink). Показывается на
+ * главном экране при любом состоянии доступа: ссылкой приходит и первый
+ * ключ, и новый вместо прежнего.
+ */
+@Composable
+fun KeyLinkPrompt(onConnect: () -> Unit) {
+    val k = KeyLink.pending.value
+    if (k.isEmpty()) return
+    val scope = rememberCoroutineScope()
+    var note by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(
+            "Применить ключ из ссылки (${KeyLink.masked(k)})?",
+            color = Brand.text,
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Button(
+                modifier = Modifier.weight(1f),
+                enabled = !busy,
+                onClick = {
+                    busy = true
+                    note = "спрашиваю у сервера…"
+                    scope.launch {
+                        val answer = withContext(Dispatchers.IO) { Api.checkKey(k) }
+                        busy = false
+                        // Не подошёл — блок остаётся с причиной под
+                        // кнопками, убирает его «Отмена».
+                        note = applyVerdict(answer, k) {
+                            KeyLink.clear()
+                            onConnect()
+                        }
+                    }
+                },
+            ) { Text(if (busy) "Проверяю…" else "Применить") }
+            TextButton(
+                modifier = Modifier.weight(1f),
+                enabled = !busy,
+                onClick = { KeyLink.clear(); note = "" },
+            ) { Text("Отмена") }
+        }
+        if (note.isNotEmpty()) {
+            Text(note, style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
+
+/**
  * Перенос ключа на это устройство.
  *
  * Появляется ровно при Bound.OTHER (условие — Access.rebindable) и

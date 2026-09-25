@@ -24,4 +24,21 @@
     -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
+    <application>
+        <!--
+            Ключ по ссылке из бота: meridian://key/<ключ> (KeyLink.kt).
+            Только в прямой раздаче: в Play ключ, купленный мимо магазина,
+            вводить нельзя по его правилам. Фильтр ДОБАВЛЯЕТСЯ к
+            MainActivity из общего манифеста, а не заменяет её.
+        -->
+        <activity android:name=".MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="meridian" android:host="key" />
+            </intent-filter>
+        </activity>
+    </application>
+
 </manifest>
