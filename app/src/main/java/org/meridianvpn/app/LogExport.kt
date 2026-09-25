@@ -10,11 +10,15 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+/** Почта поддержки (решение владельца 25.09). Общая для всех клиентов. */
+const val SUPPORT_EMAIL = "support@meridianvpn.org"
+
 /**
  * Вынос лога наружу: в буфер обмена и файлом через «Поделиться».
  *
- * ОТЛАДОЧНОЕ, убрать перед публикацией вместе с кнопками на экране и
- * переключателем транспорта.
+ * Есть и в выпускной сборке («Настройки → Логи»). Прежняя пометка
+ * «отладочное, убрать перед публикацией» устарела: по логам разбирают
+ * жалобы людей.
  *
  * Появилось затем, что логи ходили снимками экрана: в переписку их
  * влезает около сотни строк, а нужного места в них обычно нет.
@@ -100,6 +104,44 @@ object LogExport {
     }
 
     /**
+     * Отправить лог поддержке по HTTPS (POST /v1/logs). С фонового потока.
+     *
+     * Лог тот же, что уходит через «Поделиться» (text(): ссылки VK уже
+     * затёрты, ключ в лог не пишется никогда), плюс шапка: платформа,
+     * версия, время. Сам ключ не уходит — только метка: первые 8 hex
+     * sha256, по ней поддержка находит человека (та же метка у шлюза).
+     */
+    fun sendToSupport(ctx: Context): ApiClient.LogResult {
+        val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
+        val body = "Meridian Android ${appVersion(ctx)}, лог $stamp\n" + text()
+        val gz = java.io.ByteArrayOutputStream().also { out ->
+            java.util.zip.GZIPOutputStream(out).use { it.write(body.toByteArray(Charsets.UTF_8)) }
+        }.toByteArray()
+
+        val headers = HashMap<String, String>()
+        headers["X-Meridian-Platform"] = "android"
+        headers["X-Meridian-Version"] = appVersion(ctx)
+        val key = Access.password()
+        if (key.isNotEmpty()) {
+            val h = java.security.MessageDigest.getInstance("SHA-256")
+                .digest(key.toByteArray(Charsets.UTF_8))
+            headers["X-Meridian-Key-Label"] = h.take(4).joinToString("") { "%02x".format(it) }
+        }
+        val dev = Access.deviceId(ctx)
+        if (dev.length >= 4) headers["X-Meridian-Device"] = dev.takeLast(4)
+
+        val r = ApiClient.postLog(gz, headers)
+        TunnelLog.add(
+            when (r) {
+                is ApiClient.LogResult.Ticket -> "лог отправлен в поддержку, номер ${r.ticket}"
+                is ApiClient.LogResult.TooOften -> "лог в поддержку: слишком часто, повтор через ${r.retryAfter} с"
+                is ApiClient.LogResult.Failed -> "лог в поддержку не отправлен: ${r.why}"
+            }
+        )
+        return r
+    }
+
+    /**
      * Отдаёт лог файлом через стандартный Intent.
      *
      * Именно файлом, а не текстом в EXTRA_TEXT: текст пошёл бы тем же
@@ -121,7 +163,12 @@ object LogExport {
         val send = Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
             putExtra(Intent.EXTRA_STREAM, uri)
-            putExtra(Intent.EXTRA_SUBJECT, "Meridian, лог $stamp")
+            // ПОЧТА ПОДДЕРЖКИ И ТЕМА — ОДНОГО ВИДА НА ВСЕХ КЛИЕНТАХ (решение
+            // владельца 25.09): «Meridian <платформа> <версия>, лог <время>».
+            // Почтовое приложение подставит адрес само; мессенджеры его
+            // игнорируют, и «поделиться» работает как раньше.
+            putExtra(Intent.EXTRA_EMAIL, arrayOf(SUPPORT_EMAIL))
+            putExtra(Intent.EXTRA_SUBJECT, "Meridian Android ${appVersion(ctx)}, лог $stamp")
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
         val chooser = Intent.createChooser(send, "Отправить лог")

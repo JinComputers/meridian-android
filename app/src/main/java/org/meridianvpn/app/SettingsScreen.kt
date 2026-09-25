@@ -11,7 +11,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import android.content.Intent
+import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.material3.Switch
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.getValue
@@ -263,5 +268,56 @@ fun LogScreen(
                 Text(text = line, color = Brand.text, fontSize = 12.sp)
             }
         }
+
+        SupportSend(onFallback = onShare)
+    }
+}
+
+/**
+ * «Отправить в поддержку» — в одно нажатие, по HTTPS (решение владельца
+ * 25.09). Не вышло — сразу предлагаем письмо: «Поделиться» с уже
+ * подставленным адресом support@meridianvpn.org (LogExport.share).
+ */
+@Composable
+private fun SupportSend(onFallback: () -> Unit) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var busy by remember { mutableStateOf(false) }
+    var note by remember { mutableStateOf("") }
+    var offerMail by remember { mutableStateOf(false) }
+
+    Button(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        enabled = !busy,
+        onClick = {
+            busy = true
+            note = "отправляю…"
+            offerMail = false
+            scope.launch {
+                val r = withContext(Dispatchers.IO) { LogExport.sendToSupport(ctx) }
+                busy = false
+                when (r) {
+                    is ApiClient.LogResult.Ticket -> {
+                        note = "Лог отправлен, номер обращения ${r.ticket} — назовите его поддержке"
+                    }
+                    is ApiClient.LogResult.TooOften -> {
+                        note = "Лог уже отправляли недавно — попробуйте через ${(r.retryAfter + 59) / 60} мин " +
+                            "или отправьте письмом"
+                        offerMail = true
+                    }
+                    is ApiClient.LogResult.Failed -> {
+                        note = "Отправить не вышло (${r.why}) — отправьте письмом на $SUPPORT_EMAIL"
+                        offerMail = true
+                    }
+                }
+            }
+        },
+    ) { Text(if (busy) "Отправляю…" else "Отправить в поддержку") }
+
+    if (note.isNotEmpty()) {
+        Text(note, color = Brand.dim, fontSize = 13.sp, modifier = Modifier.fillMaxWidth())
+    }
+    if (offerMail) {
+        TextButton(onClick = { offerMail = false; onFallback() }) { Text("Отправить письмом") }
     }
 }
