@@ -103,6 +103,51 @@ object PathMemory {
     private const val SLOW_SUFFIX = "#slowKbps"
     private const val SLOW_N_SUFFIX = "#slowN"
 
+    /**
+     * МЕДЛЕННЫЕ ВХОДЫ. Прежде чем уходить на релей, пробуем другой вход
+     * (адрес узла): у клиента 26.09 обе медленные ступени, A (UDP) и G (TCP),
+     * шли через один и тот же вход, а второй вход лестницы не пробовался
+     * вовсе. Помним адреса входов, на которых замер дал низкую скорость;
+     * следующие подъёмы на этой сети идут мимо них, а раз в probeEvery
+     * попыток вход щупается снова.
+     */
+    private const val SLOW_HOSTS_SUFFIX = "#slowHosts"
+    private const val SLOW_HOSTS_N_SUFFIX = "#slowHostsN"
+
+    fun slowHosts(ctx: Context, key: String): Set<String> =
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getString(key + SLOW_HOSTS_SUFFIX, "").orEmpty()
+            .split(',').filter { it.isNotEmpty() }.toSet()
+
+    private fun putSlowHosts(ctx: Context, key: String, hosts: Set<String>) {
+        val e = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+        if (hosts.isEmpty()) e.remove(key + SLOW_HOSTS_SUFFIX).remove(key + SLOW_HOSTS_N_SUFFIX)
+        else e.putString(key + SLOW_HOSTS_SUFFIX, hosts.joinToString(","))
+        e.apply()
+    }
+
+    fun addSlowHost(ctx: Context, key: String, host: String) =
+        putSlowHosts(ctx, key, slowHosts(ctx, key) + host)
+
+    fun removeSlowHost(ctx: Context, key: String, host: String) =
+        putSlowHosts(ctx, key, slowHosts(ctx, key) - host)
+
+    fun clearSlowHosts(ctx: Context, key: String) = putSlowHosts(ctx, key, emptySet())
+
+    /**
+     * Входы, которые обойти на ЭТОМ подъёме. Считает попытки сама (звать
+     * ровно один раз за подъём): раз в probeEvery попыток возвращает пусто,
+     * чтобы заметить, что вход снова быстр.
+     */
+    fun avoidHostsNow(ctx: Context, key: String, probeEvery: Int): Set<String> {
+        val hosts = slowHosts(ctx, key)
+        if (hosts.isEmpty()) return emptySet()
+        val prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val n = prefs.getInt(key + SLOW_HOSTS_N_SUFFIX, 0) + 1
+        prefs.edit().putInt(key + SLOW_HOSTS_N_SUFFIX, n).apply()
+        return if (n % maxOf(2, probeEvery) != 0) hosts else emptySet()
+    }
+
     /** Замеренная скорость прямого пути, кбит/с; 0 — пометки нет. */
     fun slowKbps(ctx: Context, key: String): Int =
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getInt(key + SLOW_SUFFIX, 0)

@@ -226,18 +226,22 @@ fun Planet(
         // ЦВЕТ ГОВОРИТ ТО ЖЕ, ЧТО И ДВИЖЕНИЕ. Планета горит синим
         // только когда туннель РЕАЛЬНО стоит; во время подъёма она
         // такая же чёрная внутри, как в покое. Разбор — у Brand.space.
-        val sphereColor = if (connected) Brand.sphere else Brand.space
         // БЕЛЫЙ РЕЖИМ (просьба владельца 26.09): туннель держится только на
-        // релее — значит, работают белые списки. Белыми делаем ТОЛЬКО контур,
-        // точки и спутник; внутри сфера и меридианы прежние — целиком белая
-        // планета била бы по глазам.
+        // релее — значит, работают белые списки. Контур, точки, спутник и
+        // меридианы белые, а внутренность (заливка сферы) остаётся ЧЁРНОЙ:
+        // залитая белым планета била бы по глазам.
         val whiteNow = connected && white
+        val sphereColor = if (connected && !whiteNow) Brand.sphere else Brand.space
         val edgeColor = when {
             whiteNow -> Brand.edgeWhite
             connected -> Brand.edge
             else -> Brand.edgeOff
         }
-        val meridianColor = if (connected) Brand.meridian else Brand.meridianOff
+        val meridianColor = when {
+            whiteNow -> Brand.edgeWhite
+            connected -> Brand.meridian
+            else -> Brand.meridianOff
+        }
 
         val edgeWidth = r * 0.045f
         val meridianWidth = r * 0.022f

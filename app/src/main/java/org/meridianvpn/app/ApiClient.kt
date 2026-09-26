@@ -304,7 +304,7 @@ object ApiClient {
                     else -> LogResult.Failed("служба ответила $code")
                 }
             } catch (e: Throwable) {
-                lastWhy = e.message ?: e.javaClass.simpleName
+                lastWhy = scrubKey(e.message ?: e.javaClass.simpleName)
                 TunnelLog.add(
                     "лог в поддержку: ${addr.host}:${addr.port} не дозвонился за " +
                         "${System.currentTimeMillis() - t0} мс (${e.javaClass.simpleName}: $lastWhy)"
@@ -411,9 +411,9 @@ object ApiClient {
             // имени роняют рукопожатие, а это IOException. Так и надо —
             // для человека это «не дозвонились», и это правда: сервер,
             // который не тот, всё равно что сервер, которого нет.
-            return Result.Unavailable(e.message ?: e.javaClass.simpleName)
+            return Result.Unavailable(scrubKey(e.message ?: e.javaClass.simpleName))
         } catch (e: Throwable) {
-            return Result.Unavailable(e.message ?: e.javaClass.simpleName)
+            return Result.Unavailable(scrubKey(e.message ?: e.javaClass.simpleName))
         } finally {
             try {
                 conn?.disconnect()
@@ -630,6 +630,15 @@ object ApiClient {
     )
 
     private fun enc(s: String): String = URLEncoder.encode(s, "UTF-8")
+
+    /**
+     * Текст сбоя без ключа. Параметры (в том числе key) идут в строке запроса,
+     * и текст исключения может нести адрес запроса целиком: в журнал и в лог
+     * для поддержки он попадать не должен (та же дыра нашлась в Go-клиенте
+     * engine/params 26.09).
+     */
+    private fun scrubKey(s: String): String =
+        s.replace(Regex("([?&]key=)[^&\\s)\"']+"), "$1…")
 
     private fun appCode(): Int = try {
         val ctx = appCtx ?: return 0
