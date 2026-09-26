@@ -339,6 +339,20 @@ class MeridianVpnService : VpnService() {
      * «включилась защита» на обычном подключении было бы враньём по
      * смыслу, не по факту.
      */
+    /**
+     * Причина обрыва для строки, видимой в РЕЛИЗЕ (просьба владельца 26.09:
+     * по логам клиентов должно быть видно, что происходит). Только готовые
+     * человеческие формулировки: сырой reason движка может нести детали
+     * сокета, а в релизном логе им не место (61.4/61.5).
+     */
+    private fun humanReason(reason: String): String = when {
+        reason.contains(REASON_MUTE) -> REASON_MUTE
+        reason.contains(REASON_SILENCE) -> REASON_SILENCE
+        reason.startsWith("свой перезапуск") -> "смена сети или перезапуск"
+        reason.startsWith("движок нашёл обрыв") -> "обрыв канала"
+        else -> ""
+    }
+
     private fun establishBlackhole(reason: String, announce: Boolean = true) = synchronized(killSwitchLock) {
         val wasAlready = blackhole != null
         try {
@@ -384,7 +398,11 @@ class MeridianVpnService : VpnService() {
             // выше), а announce отсекает routine-подключение, где
             // заглушка защищает подъём лестницы, а не чинит обрыв.
             if (announce && !wasAlready) {
-                TunnelLog.event("Kill Switch сработал: интернет заблокирован, пока туннель не восстановится")
+                val why = humanReason(reason)
+                TunnelLog.event(
+                    "Kill Switch сработал: интернет заблокирован, пока туннель не восстановится" +
+                        (if (why.isEmpty()) "" else " (причина: $why)")
+                )
             }
         } catch (e: Throwable) {
             TunnelLog.add(
@@ -1252,7 +1270,7 @@ class MeridianVpnService : VpnService() {
                 // них разное. Ступень без DTLS требует меньшего, потому
                 // что над obfs там нет никого, кто резал бы пакеты.
                 val mtu = Engine.mtu()
-                TunnelLog.add("MTU туннеля: $mtu")
+                TunnelLog.event("MTU туннеля: $mtu")
 
                 // Туннель собирается функцией, а не один раз: если система не
                 // примет маршруты «RU-адреса напрямую» (их тысячи), собираем
