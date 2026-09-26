@@ -92,6 +92,49 @@ object PathMemory {
     private const val DIRECT_MUTE_SUFFIX = "#dirMuteStreak"
 
     /**
+     * МЕДЛЕННЫЕ ПРЯМЫЕ ПУТИ (просьба владельца 26.09: клиент сам уходит на
+     * более быстрый путь). Замер скорости поднятого туннеля (движок,
+     * speedprobe.go) на прямом пути или потоке показал низкую скорость, а
+     * релей доступен — на этой сети помечаем «прямые и потоки медленные» и
+     * следующие подъёмы идут на релей, щупая прямой раз в probeEvery попыток.
+     * Значение — замеренная скорость в кбит/с: с ней сверяем релей, чтобы не
+     * держать пометку, если релей оказался не быстрее.
+     */
+    private const val SLOW_SUFFIX = "#slowKbps"
+    private const val SLOW_N_SUFFIX = "#slowN"
+
+    /** Замеренная скорость прямого пути, кбит/с; 0 — пометки нет. */
+    fun slowKbps(ctx: Context, key: String): Int =
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getInt(key + SLOW_SUFFIX, 0)
+
+    fun markSlow(ctx: Context, key: String, kbps: Int) {
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putInt(key + SLOW_SUFFIX, maxOf(1, kbps))
+            .putInt(key + SLOW_N_SUFFIX, 0)
+            .apply()
+    }
+
+    fun clearSlow(ctx: Context, key: String) {
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .remove(key + SLOW_SUFFIX)
+            .remove(key + SLOW_N_SUFFIX)
+            .apply()
+    }
+
+    /**
+     * Идти ли мимо прямых путей и потока на этой сети СЕЙЧАС. Считает попытки
+     * сама (вызывать ровно один раз за подъём): раз в probeEvery попыток
+     * возвращает false, чтобы заметить, что прямой снова быстр.
+     */
+    fun skipSlow(ctx: Context, key: String, probeEvery: Int): Boolean {
+        if (slowKbps(ctx, key) == 0) return false
+        val prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val n = prefs.getInt(key + SLOW_N_SUFFIX, 0) + 1
+        prefs.edit().putInt(key + SLOW_N_SUFFIX, n).apply()
+        return n % maxOf(2, probeEvery) != 0
+    }
+
+    /**
      * Ключ сети: транспорт плюс что-то, отличающее одну сеть от другой.
      *
      * Для мобильной — имя оператора (разрешений не требует), для Wi-Fi —

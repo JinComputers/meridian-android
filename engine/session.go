@@ -390,6 +390,11 @@ type session struct {
 	stopped  bool
 	echoConf bool
 
+	// probe — замер скорости туннеля (speedprobe.go). Ставится в
+	// startPumps до запуска насосов и дальше не меняется; nil, если
+	// замер выключен.
+	probe *speedProbe
+
 	// winner — имя ступени, которой сессия поднялась. Приложение
 	// запоминает его, чтобы в следующий раз начать с неё.
 	winner string
@@ -1772,6 +1777,7 @@ func (s *session) auth(
 	}
 	s.logf("шлюз %s, маска /%d, эхо-keepalive=%v", parts[2], prefix, s.echoConf)
 	lastAuthGateway.Store(parts[2])
+	lastAuthIP.Store(parts[1])
 	lastAuthMaskHex.Store(parts[3])
 
 	// Сроки снимаются ТОЛЬКО здесь — когда позади и рукопожатие, и AUTH.
@@ -1855,6 +1861,9 @@ func (s *session) startPumps() error {
 	// а пишутся в один TUN. Насосы слотов, поднятых позже, добавляются
 	// в ту же группу из addSlot.
 	s.upAt = time.Now()
+	if speedProbeOn.Load() {
+		s.probe = &speedProbe{}
+	}
 
 	list := s.slotList()
 	s.armStun()
@@ -1864,6 +1873,9 @@ func (s *session) startPumps() error {
 	// Сторож немого туннеля. В группу насосов НЕ входит: он только
 	// смотрит и спит, держать из-за него остановку незачем.
 	go s.muteWatch()
+	if s.probe != nil {
+		go s.runSpeedProbe(s.probe)
+	}
 	// Первый отпечаток — сразу после подъёма. С ним будет сравниваться
 	// тот, что снимет сторож немоты.
 	go s.probeStunNow("подъём")
@@ -2004,6 +2016,10 @@ func (s *session) netToTun(r *rung) {
 				s.logf("ЭХО от шлюза вернулось через %s — шлюз нас слышит и отвечает",
 					time.Since(s.upAt).Round(time.Millisecond))
 			}
+			continue
+		}
+		// Ответы нашей пробы скорости в TUN не отдаём (speedprobe.go).
+		if p := s.probe; p != nil && p.active.Load() && p.take(buf[:n]) {
 			continue
 		}
 		s.rxBytes.Add(uint64(n))
