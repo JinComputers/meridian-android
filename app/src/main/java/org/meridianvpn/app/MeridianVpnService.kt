@@ -1339,7 +1339,16 @@ class MeridianVpnService : VpnService() {
                 return builder
                 }
 
-                val ruWanted = RuDirect.enabled()
+                // БЕЛЫЙ РЕЖИМ = победил релей (просьба владельца 26.09). Только
+                // здесь «RU-адреса напрямую» применяются: на прямых путях они
+                // ломали зарубежное (ютуб отдаётся с адресов внутри российских
+                // блоков), а нужны они там, где иначе всё, кроме российского,
+                // не работает вовсе — то есть на белых списках.
+                val whiteMode = winner == Paths.RELAY
+                val ruWanted = RuDirect.enabled() && whiteMode
+                if (RuDirect.enabled() && !whiteMode) {
+                    TunnelLog.add("RU-адреса напрямую: включено, но путь не релей — не применяю")
+                }
                 val builder = makeBuilder(ruWanted)
 
                 notePrivateDns()
@@ -1397,7 +1406,7 @@ class MeridianVpnService : VpnService() {
                 // туннеле выдаётся по хешу пароля, и с неверным ключом мы
                 // до этой строки просто не дошли бы.
                 Access.confirmPending()
-                TunnelState.setConnected(true)
+                TunnelState.setConnected(true, whiteMode)
                 updateNotification(connected = true)
                 connectedAt = System.currentTimeMillis()
                 // Поднялись — счётчик неудач обнуляется.

@@ -77,6 +77,9 @@ object Brand {
     /** Меридианы на чёрном. */
     val meridian = Color(0xFF525D80)
 
+    /** Контур и точки в белом режиме (туннель на релее, белые списки). */
+    val edgeWhite = Color(0xFFFFFFFF)
+
     // ПРИГЛУШЁННАЯ ПЛАНЕТА — пока туннеля нет.
     //
     // Планета — единственный показатель состояния на главном экране, и
@@ -151,6 +154,7 @@ fun Planet(
     size: Dp = 220.dp,
     enabled: Boolean = true,
     busy: Boolean = false,
+    white: Boolean = false,
     onClick: () -> Unit = {},
 ) {
     // Меридианы едут и пока поднимаемся, и когда подняты. Спутник —
@@ -223,7 +227,16 @@ fun Planet(
         // только когда туннель РЕАЛЬНО стоит; во время подъёма она
         // такая же чёрная внутри, как в покое. Разбор — у Brand.space.
         val sphereColor = if (connected) Brand.sphere else Brand.space
-        val edgeColor = if (connected) Brand.edge else Brand.edgeOff
+        // БЕЛЫЙ РЕЖИМ (просьба владельца 26.09): туннель держится только на
+        // релее — значит, работают белые списки. Белыми делаем ТОЛЬКО контур,
+        // точки и спутник; внутри сфера и меридианы прежние — целиком белая
+        // планета била бы по глазам.
+        val whiteNow = connected && white
+        val edgeColor = when {
+            whiteNow -> Brand.edgeWhite
+            connected -> Brand.edge
+            else -> Brand.edgeOff
+        }
         val meridianColor = if (connected) Brand.meridian else Brand.meridianOff
 
         val edgeWidth = r * 0.045f
@@ -321,7 +334,7 @@ fun Planet(
                 drawCircle(Color.White.copy(alpha = g), dot * 0.9f, at)
             }
 
-            drawCircle(Brand.edge, dot * 0.85f, sat)
+            drawCircle(if (whiteNow) Brand.edgeWhite else Brand.edge, dot * 0.85f, sat)
         }
     }
 }

@@ -187,7 +187,9 @@ object SplitTunnel {
             )
         }
 
-        applied = signature(ruDirect)
+        // Запоминаем ЖЕЛАНИЕ человека, а не применённое: на прямом пути
+        // переключатель ничего не делает, и расхождения с ним быть не должно.
+        applied = signature(RuDirect.enabled())
     }
 
     private fun addDisallowed(builder: VpnService.Builder, pkg: String, ctx: Context) {

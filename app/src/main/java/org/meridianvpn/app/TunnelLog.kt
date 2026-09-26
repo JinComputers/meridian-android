@@ -275,6 +275,13 @@ object TunnelState {
     val connected = mutableStateOf(false)
 
     /**
+     * БЕЛЫЙ РЕЖИМ: туннель поднят через релей (ссылки VK введены, прямые
+     * пути закрыты — то есть работает обход белых списков). Только вместе с
+     * connected; по этому признаку планета рисуется белым контуром.
+     */
+    val white = mutableStateOf(false)
+
+    /**
      * Туннель ПОДНИМАЕТСЯ: человек нажал, но лестница ещё идёт.
      *
      * Нужно ровно для одного — чтобы нажатие на планету сразу дало
@@ -295,9 +302,10 @@ object TunnelState {
      * Любой определённый исход снимает «поднимаюсь»: и успех, и провал.
      * Иначе застрявшее true оставило бы планету вращаться навсегда.
      */
-    fun setConnected(value: Boolean) {
+    fun setConnected(value: Boolean, whiteMode: Boolean = false) {
         main.post {
             connected.value = value
+            white.value = value && whiteMode
             busy.value = false
             refreshTile()
         }

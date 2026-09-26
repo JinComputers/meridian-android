@@ -169,6 +169,19 @@ func trySend(events chan<- Event, e Event) {
 // отменяющую функцию этого же ctx) — сторожевая горутина зовёт
 // engine.Stop().
 //
+// ВАЖНО: сторож заведён ДО engine.Connect, а не после. engine.Connect —
+// блокирующий вызов без своего ctx (gomobile-граница, отсюда и обычные
+// аргументы вместо context.Context); лестница внутри него (session.go,
+// climb) живёт до ladderBudget = 25с. Раньше сторож ставился уже ПОСЛЕ
+// возврата engine.Connect — отмена ctx во время самой лестницы (второе
+// нажатие «стоп» на клиенте, пока подключение ещё не встало) никем не
+// принималась, и клиент реально ждал до 25с вместо немедленной отмены.
+// engine.Connect кладёт сессию в current ДО начала лазания (engine.go,
+// с явным комментарием про этот же побочный эффект: "Stop() из onDestroy
+// ... во время лазания теперь действительно обрывает его"), так что
+// engine.Stop() отсюда безопасно звать в любой момент — до, во время и
+// после Connect (current == nil — попросту no-op).
+//
 // ОДНА СЕССИЯ НА ПРОЦЕСС, как и у Android/iOS: движок хранит её в
 // собственном пакетном состоянии (engine.go, current *session), а не
 // per-instance — Start второй раз до Stop первой вернёт ошибку "сессия
@@ -184,18 +197,25 @@ func Start(ctx context.Context, cfg Config, tun engine.PacketFlow) (*Handle, <-c
 	}
 	prot := newGuardedProtector(cfg.Protector, tunnelDNS)
 
+	runCtx, cancel := context.WithCancel(ctx)
+	go func() {
+		<-runCtx.Done()
+		engine.Stop()
+	}()
+
 	assigned, err := engine.Connect(
 		cfg.Gateway, cfg.CachedFallback, cfg.Ladder, cfg.Password, cfg.DeviceID,
 		prot, cfg.Guard, cfg.Captcha, logger, listener,
 	)
 	if err != nil {
+		cancel()
 		close(events)
 		return nil, events, err
 	}
 
 	info, err := parseAssigned(assigned)
 	if err != nil {
-		engine.Stop()
+		cancel()
 		return nil, events, err
 	}
 	info.MTU = engine.MTU()
@@ -204,15 +224,9 @@ func Start(ctx context.Context, cfg Config, tun engine.PacketFlow) (*Handle, <-c
 		tun = clampFlow{inner: tun}
 	}
 	if err := engine.StartFlow(tun); err != nil {
-		engine.Stop()
+		cancel()
 		return nil, events, err
 	}
-
-	runCtx, cancel := context.WithCancel(ctx)
-	go func() {
-		<-runCtx.Done()
-		engine.Stop()
-	}()
 
 	trySend(events, Event{Kind: "ready", Reason: fmt.Sprintf("%s/%d gw %s", info.IP, info.PrefixLen, info.Gateway)})
 	return &Handle{cancel: cancel, info: info}, events, nil
