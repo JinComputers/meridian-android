@@ -2,6 +2,9 @@ package org.meridianvpn.app
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.material3.Switch
+import androidx.compose.ui.Alignment
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.OutlinedTextField
@@ -43,6 +46,33 @@ fun DebugRows() {
         modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
+        // «ТОЛЬКО РЕЛЕЙ» — для отладки скорости (просьба владельца 26.09):
+        // лестница без прямых путей и потоков, туннель встаёт только на
+        // релее. Применяется при следующем подключении.
+        val relayOnly = TransportSetting.mode.value == Config.TransportMode.RELAY_ONLY
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Только релей", color = Brand.text, fontSize = 16.sp)
+                Text(
+                    "отладка скорости, применится при следующем подключении",
+                    color = Brand.dim,
+                    fontSize = 12.sp,
+                )
+            }
+            Switch(
+                checked = relayOnly,
+                onCheckedChange = {
+                    TransportSetting.set(
+                        ctx,
+                        if (it) Config.TransportMode.RELAY_ONLY else Config.TransportMode.AUTO,
+                    )
+                },
+            )
+        }
+
         // ПОЛЕ ПРОПАДАЕТ, КОГДА ТОКЕН СОХРАНЁН.
         //
         // Раньше оно оставалось на экране, и это сбивало: непонятно,

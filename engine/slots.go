@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -24,18 +25,15 @@ const (
 	// новый GetCreds на том же хеше даёт независимую девятку.
 	slotsPerBatch = 9
 
-	// slotsMax — ЖЁСТКИЙ потолок числа слотов. Шестнадцать, и ни одним
-	// больше.
+	// slotsMax — потолок числа слотов клиента.
 	//
-	// Это не наш выбор и не запас: на шлюзе maxSlotsPerIP = 16, а адрес
-	// в туннеле выдаётся по хешу пароля — значит ВСЕ наши слоты приходят
-	// на один и тот же IP. Семнадцатый шлюз отвергнет.
-	//
-	// Отсюда разбивка на пачки 9 + 7, а НЕ 9 + 9. Второй комплект
-	// намеренно неполный: девять плюс девять это восемнадцать, то есть
-	// на два слота выше шлюзового предела. Если кто-то соберётся
-	// "исправить" на 9+9 — вот причина, по которой этого делать нельзя.
-	slotsMax = 16
+	// 48 с 26.09 (просьба владельца): кот 1 поднял maxSlotsPerIP шлюза до 50, а
+	// адрес в туннеле выдаётся по хешу пароля, так что ВСЕ наши слоты приходят
+	// на один IP. Клиентский потолок держим на 2 ниже шлюзового: сверх него
+	// шлюз отвергает новые слоты. Пачки по slotsPerBatch (девять) берут комплекты
+	// по кругу хешей; когда пачек больше, чем ссылок, комплект добывается заново
+	// (credsKey). Раньше здесь было 16 (шлюз 16, потом 24).
+	slotsMax = 48
 
 	// credsThrottleMin/Max — интервал между ЛЮБЫМИ двумя запросами
 	// кредов, как у роутерного клиента.
@@ -97,7 +95,18 @@ func batchOf(slotIdx int) int {
 var (
 	credsGateMu   sync.Mutex
 	credsLastTake time.Time
+
+	// credsRelaxNext — следующий takeCredsGate ждёт коротко: предыдущая
+	// цепочка кончилась быстрым ответом VK «релея нет» (см. vkcreds.go).
+	credsRelaxNext atomic.Bool
 )
+
+// credsRelaxedWait — короткая пауза после ответа «релея нет»: от неё до двух её.
+const credsRelaxedWait = 500 * time.Millisecond
+
+// extraSlotsParallel — сколько дополнительных слотов стартовой сборки
+// поднимаются одновременно.
+const extraSlotsParallel = 3
 
 // takeCredsGate — глобальный троттлинг между запросами кредов.
 //
@@ -116,6 +125,13 @@ func takeCredsGate(ctx context.Context, logf func(string, ...interface{})) {
 		return
 	}
 	wait := credsThrottleMin + randDuration(credsThrottleMax-credsThrottleMin)
+	// ПОСЛЕ ОТВЕТА VK «РЕЛЕЯ НЕТ» ПАУЗА КОРОТКАЯ (просьба владельца 26.09:
+	// ускорить подъём на релее). VK ответил быстро и по существу, без капчи;
+	// в логе 26.09 первый хеш так ответил, и следующий ждал 4,1 с. Полная
+	// пауза защищает от капчи после настоящих цепочек, а тут стоять незачем.
+	if credsRelaxNext.Swap(false) {
+		wait = credsRelaxedWait + randDuration(credsRelaxedWait)
+	}
 	if since := time.Since(credsLastTake); since < wait {
 		pause := wait - since
 		if logf != nil {
@@ -269,17 +285,55 @@ func (s *session) openExtraSlots() {
 		want = slotsMax
 	}
 
-	for i := 1; i < want; i++ {
+	// ВСЕ СЛОТЫ СРАЗУ, без постепенного роста (просьба владельца 26.09: у Wdtt так,
+	// автоподбора нет). Первый слот каждой пачки идёт один (он добывает комплект
+	// кредов в кэш), остальные параллельно по три — см. growSlots.
+	if want < 2 {
+		return
+	}
+	s.growSlots(want - 1)
+	s.logf("многослот собран: слотов в работе %d из %d", len(s.slotList()), want)
+}
+
+// growSlots добавляет до n слотов по решению автоподбора. Первый слот каждой
+// новой пачки (новый комплект кредов) идёт один, после ожидания уже начатых:
+// он добывает комплект в кэш, остальные пачки берут его оттуда параллельно.
+func (s *session) growSlots(n int) {
+	if s.dialer == nil || n <= 0 {
+		return
+	}
+	have := len(s.slotList())
+	if have+n > s.slotsMax {
+		n = s.slotsMax - have
+	}
+	var (
+		wg  sync.WaitGroup
+		sem = make(chan struct{}, extraSlotsParallel)
+	)
+	for k := 1; k <= n; k++ {
 		select {
 		case <-s.ctx.Done():
+			wg.Wait()
 			return
 		default:
 		}
-		if !s.dialOneSlot(i+1, want) {
-			return
+		num := have + k
+		if batchOf(num-1) != batchOf(num-2) || k == 1 {
+			wg.Wait()
+			if !s.dialOneSlot(num, s.slotsMax) {
+				return
+			}
+			continue
 		}
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(num int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			s.dialOneSlot(num, s.slotsMax)
+		}(num)
 	}
-	s.logf("многослот собран: слотов в работе %d из %d", len(s.slotList()), want)
+	wg.Wait()
 }
 
 // growOneSlot добавляет ОДИН слот по решению автоподбора.

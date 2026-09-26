@@ -1,79 +1,21 @@
 package org.meridianvpn.app
 
 import android.content.Context
-import android.net.IpPrefix
-import android.net.VpnService
-import android.os.Build
-import androidx.compose.runtime.mutableStateOf
-import java.io.DataInputStream
-import java.net.InetAddress
 
 /**
- * «RU-адреса напрямую» — российские адреса и приложения мимо VPN (просьба
- * владельца 25.09).
+ * Российские приложения (банки, госуслуги, маркетплейсы и т. п.), которые
+ * идут МИМО туннеля по умолчанию (решение владельца 26.09).
  *
- * ЗАЧЕМ. Банки, госуслуги, маркетплейсы и многие российские сайты не
- * работают или работают хуже с зарубежного адреса. Через туннель им
- * ходить незачем: VPN нужен для заблокированного, а не для своего.
+ * Многие банки проверяют сам факт VPN на телефоне, и приложение, выведенное
+ * из туннеля, VPN не видит вовсе. Включено всегда, без переключателя и без
+ * вопроса: это дефолт для новых клиентов (SplitTunnel.apply добавляет эти
+ * приложения в исключения поверх списка человека).
  *
- * ДВА СЛОЯ, и оба нужны:
- *   1. АДРЕСА. Маршрут по умолчанию туннеля — это 0.0.0.0/0 МИНУС
- *      российские блоки (реестр RIPE, страна RU; assets/ru_ipv4.bin,
- *      генератор tools/ru_ipv4.py). Трафик ЛЮБОГО приложения к российскому
- *      адресу идёт мимо туннеля: браузер на ozon.ru, яндекс, госуслуги.
- *   2. ПРИЛОЖЕНИЯ. Российские приложения из списка RU_APPS целиком мимо
- *      туннеля (addDisallowedApplication). Слой нужен банкам: многие из них
- *      проверяют сам факт VPN на телефоне, и одних маршрутов им мало —
- *      приложение, выведенное из туннеля, VPN не видит вовсе.
- *
- * ПО ДОМЕНАМ Android маршрутизировать не умеет: у VpnService только
- * адреса и приложения. Сайт российской компании на зарубежном CDN пойдёт
- * через туннель. Список доменов для настольных клиентов и роутеров — в
- * docs/ru-direct.md.
- *
- * ВЕРСИИ ANDROID.
- *   13+ (API 33): excludeRoute — 0.0.0.0/0 и тысячи исключений, все блоки
- *        из файла (/22 и крупнее, ~98 % российских адресов).
- *   8–12: исключений нет, маршруты строятся ДОПОЛНЕНИЕМ до RU. Чтобы их
- *        не вышло десять тысяч, берём только блоки /18 и крупнее (~66 %
- *        российских адресов, ~2100 маршрутов).
- * Если система не примет маршруты разом — MeridianVpnService собирает
- * туннель без них и говорит об этом (строка «не применились»).
+ * Прежний переключатель «RU-адреса напрямую» (маршруты по блокам RIPE) убран:
+ * на телефоне он выгоды не давал, а мешал зарубежным сервисам. Документ
+ * docs/ru-direct.md остаётся справкой для настольных клиентов и роутеров.
  */
 object RuDirect {
-
-    private const val PREFS = "meridian_rudirect"
-    private const val K_ON = "on"
-    private const val ASSET = "ru_ipv4.bin"
-
-    /** Порог длины префикса для Android 8–12, см. заголовок. */
-    private const val LEGACY_MAX_PREFIX = 18
-
-    /** Для экрана настроек. */
-    val on = mutableStateOf(false)
-
-    private var appCtx: Context? = null
-
-    fun attach(ctx: Context) {
-        appCtx = ctx.applicationContext
-        on.value = try {
-            ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(K_ON, false)
-        } catch (e: Throwable) {
-            false
-        }
-    }
-
-    fun enabled(): Boolean = on.value
-
-    fun setEnabled(v: Boolean) {
-        on.value = v
-        val ctx = appCtx ?: return
-        try {
-            ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(K_ON, v).apply()
-        } catch (e: Throwable) {
-        }
-        TunnelLog.add("RU-адреса напрямую: " + if (v) "включено" else "выключено")
-    }
 
     /**
      * Российские приложения, которые целиком идут мимо туннеля.
@@ -191,99 +133,4 @@ object RuDirect {
     /** Установленные из RU_APPS. */
     fun installedApps(ctx: Context): List<String> =
         RU_APPS.filter { SplitTunnel.installed(ctx, it) }
-
-    /**
-     * Маршрут по умолчанию туннеля: 0.0.0.0/0, а при ru — минус российские
-     * блоки (способ — по версии Android, см. заголовок).
-     */
-    fun addRoutes(builder: VpnService.Builder, ctx: Context, ru: Boolean) {
-        if (!ru) {
-            builder.addRoute("0.0.0.0", 0)
-            return
-        }
-        val blocks = load(ctx)
-        if (blocks.isEmpty()) {
-            TunnelLog.add("RU-адреса напрямую: список адресов не прочитан — весь IPv4 через туннель")
-            builder.addRoute("0.0.0.0", 0)
-            return
-        }
-        if (Build.VERSION.SDK_INT >= 33) {
-            builder.addRoute("0.0.0.0", 0)
-            for (b in blocks) builder.excludeRoute(IpPrefix(toInet(b.addr), b.len))
-            TunnelLog.add("RU-адреса напрямую: исключено российских блоков ${blocks.size}")
-        } else {
-            val legacy = blocks.filter { it.len <= LEGACY_MAX_PREFIX }
-            val routes = complement(legacy)
-            for (r in routes) builder.addRoute(toInet(r.addr), r.len)
-            TunnelLog.add(
-                "RU-адреса напрямую (Android до 13): российских блоков ${legacy.size}, " +
-                    "маршрутов через туннель ${routes.size}"
-            )
-        }
-    }
-
-    private class Block(val addr: Long, val len: Int)
-
-    @Volatile
-    private var cache: List<Block>? = null
-
-    private fun load(ctx: Context): List<Block> {
-        cache?.let { return it }
-        val out = ArrayList<Block>()
-        try {
-            DataInputStream(ctx.assets.open(ASSET).buffered()).use { inp ->
-                val magic = ByteArray(4).also { inp.readFully(it) }
-                if (!(magic[0] == 'R'.code.toByte() && magic[1] == 'U'.code.toByte() &&
-                        magic[2] == '4'.code.toByte() && magic[3] == 1.toByte())
-                ) return emptyList()
-                val date = ByteArray(8).also { inp.readFully(it) }
-                val n = inp.readInt()
-                repeat(n) {
-                    val a = inp.readInt().toLong() and 0xffffffffL
-                    val l = inp.readUnsignedByte()
-                    out.add(Block(a, l))
-                }
-                TunnelLog.add("RU-адреса: реестр RIPE от ${String(date, Charsets.US_ASCII)}, блоков $n")
-            }
-        } catch (e: Throwable) {
-            TunnelLog.add("RU-адреса: файл списка не прочитан (${e.message})")
-            return emptyList()
-        }
-        cache = out
-        return out
-    }
-
-    /** Дополнение до набора блоков в пространстве IPv4, минимальными префиксами. */
-    private fun complement(blocks: List<Block>): List<Block> {
-        val out = ArrayList<Block>()
-        var cur = 0L
-        for (b in blocks.sortedBy { it.addr }) {
-            val start = b.addr
-            val end = b.addr + (1L shl (32 - b.len)) - 1
-            if (start > cur) cover(cur, start - 1, out)
-            if (end + 1 > cur) cur = end + 1
-        }
-        if (cur <= 0xffffffffL) cover(cur, 0xffffffffL, out)
-        return out
-    }
-
-    /** Покрыть [from, to] выровненными префиксами. */
-    private fun cover(from: Long, to: Long, out: MutableList<Block>) {
-        var a = from
-        while (a <= to) {
-            var len = 32
-            // Наибольший выровненный блок, начинающийся в a и не выходящий за to.
-            while (len > 0) {
-                val size = 1L shl (32 - (len - 1))
-                if (a % size != 0L || a + size - 1 > to) break
-                len--
-            }
-            out.add(Block(a, len))
-            a += 1L shl (32 - len)
-        }
-    }
-
-    private fun toInet(a: Long): InetAddress = InetAddress.getByAddress(
-        byteArrayOf((a shr 24).toByte(), (a shr 16).toByte(), (a shr 8).toByte(), a.toByte())
-    )
 }

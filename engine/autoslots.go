@@ -112,13 +112,17 @@ const (
 
 	// slotWindowRamp — короткое окно НА РАЗГОНЕ.
 	//
+	// 5 секунд (было 10) по просьбе владельца 26.09: релей у нас масштабируется
+	// линейно (замер: около 2 Мбит на слот, насыщения нет), и ждать по двадцать
+	// секунд каждый слот незачем. На разгоне рост ещё и ускоряется шагом growStep.
+	//
 	// Пока не случилось ни одной заморозки и ни одного снятия, мы
 	// заведомо далеко от насыщения, а перерасти не даёт потолок в девять
 	// слотов. Значит и осторожничать не перед чем — можно вдвое быстрее.
 	//
 	// После первого же признака насыщения окно становится полным: там,
 	// где решение близко к порогу, короткое окно только шумит.
-	slotWindowRamp = 10 * time.Second
+	slotWindowRamp = 5 * time.Second
 
 	// fastGainFraction — «очевидный успех», принимаемый без медианы.
 	//
@@ -171,6 +175,12 @@ const (
 	// если канал изменился, и вчерашний потолок сегодня может быть не
 	// потолком.
 	maxUnprofitable = 3
+
+	// growStepMax — наибольшее число слотов, добавляемых за одно решение о росте.
+	// Шаг удваивается после каждого окупившегося роста (1, 2, 4, 8) и сбрасывается
+	// в единицу при потолке канала: релей растёт линейно, и по одному слоту за
+	// окно до сорока восьми шло бы слишком долго.
+	growStepMax = 8
 
 	// shrinkLock — после снятия слота рост запрещён это время.
 	// Защита от маятника. У роутера 5 минут, у нас 2 — пропорционально
@@ -243,6 +253,9 @@ type autoSlots struct {
 	// unprofitable — неокупившихся ростов подряд.
 	unprofitable int
 
+	// step — сколько слотов добавляем за одно решение о росте (см. growStepMax).
+	step int
+
 	// growthOver — рост прекращён до конца сессии.
 	//
 	// Не то же самое, что заморозка: та временная и снимается сама,
@@ -312,7 +325,7 @@ func (a *autoSlots) leaveRamp(why string) {
 func (s *session) runAutoSlots() {
 	s.probeProcStat()
 
-	a := &autoSlots{s: s, cur: slotWindowRamp, ramp: true}
+	a := &autoSlots{s: s, cur: slotWindowRamp, ramp: true, step: 1}
 	t := time.NewTicker(slotWindowRamp)
 	defer t.Stop()
 	a.ticker = t
@@ -371,6 +384,7 @@ func (a *autoSlots) window(bytes uint64) {
 					a.awaiting = 0
 					// Окупился — счёт неокупившихся начинаем заново.
 					a.unprofitable = 0
+					a.step = minInt(a.step*2, growStepMax)
 					s.logf("автослоты: слот окупился СРАЗУ (по одному окну), полоса %d → %d КБ/окно (+%.0f%% при быстром пороге %.0f%%), слотов %d",
 						before/1024, bytes/1024, gain*100, fastGainFraction*100, slots)
 					return
@@ -478,7 +492,12 @@ func (a *autoSlots) window(bytes uint64) {
 	}
 
 	a.healthy++
-	if a.healthy < growWindows {
+	// На разгоне хватает одного здорового окна: оно и так короткое (5 с).
+	need := growWindows
+	if a.ramp {
+		need = 1
+	}
+	if a.healthy < need {
 		s.logf("автослоты: окно здоровое (%d КБ, %.0f кбит/с), подтверждений %d из %d",
 			bytes/1024, kbit, a.healthy, growWindows)
 		return
@@ -489,9 +508,13 @@ func (a *autoSlots) window(bytes uint64) {
 	a.beforeGrow = a.tail(a.history, gainWindows)
 	a.afterGrow = nil
 	a.postponed = 0
-	s.logf("автослоты: расту до %d слотов, %d окон подряд по %d КБ и больше",
-		slots+1, growWindows, a.scaled(minWindowBytes)/1024)
-	go s.growOneSlot()
+	n := a.step
+	if slots+n > s.slotsMax {
+		n = s.slotsMax - slots
+	}
+	s.logf("автослоты: расту до %d слотов (шаг %d), %d окон подряд по %d КБ и больше",
+		slots+n, n, need, a.scaled(minWindowBytes)/1024)
+	go s.growSlots(n)
 	a.awaiting = gainWindows
 }
 
@@ -550,6 +573,7 @@ func (a *autoSlots) judgeGain(now time.Time) {
 	if gain >= minGainFraction {
 		// Окупился — колено кривой отодвинулось, счёт начинаем заново.
 		a.unprofitable = 0
+		a.step = minInt(a.step*2, growStepMax)
 		s.logf("автослоты: слот окупился ПО МАКСИМУМУ %d нагруженных окон из %d, полоса %d → %d КБ/окно (+%.0f%% при пороге %.0f%%), слотов %d",
 			len(aft), len(a.afterGrow), before/1024, after/1024,
 			gain*100, minGainFraction*100, slots)
@@ -557,6 +581,7 @@ func (a *autoSlots) judgeGain(now time.Time) {
 	}
 
 	a.unprofitable++
+	a.step = 1
 	if a.unprofitable >= maxUnprofitable {
 		// ПРИЕХАЛИ. Не заморозка: та временная и снимется сама, эта до
 		// конца сессии. Три вердикта «ниже порога» подряд — колено
@@ -631,4 +656,11 @@ func idleShrinkAllowed(sawLoad bool, slots int, upFor time.Duration) bool {
 		return false
 	}
 	return slots > 1 && upFor >= idleNoLoadGrace
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

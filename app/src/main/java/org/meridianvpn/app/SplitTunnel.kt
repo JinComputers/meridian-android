@@ -145,7 +145,7 @@ object SplitTunnel {
      * Смешивать addAllowed и addDisallowed нельзя: система бросит
      * исключение. Поэтому ветки разделены жёстко.
      */
-    fun apply(builder: VpnService.Builder, ctx: Context, ruDirect: Boolean = false) {
+    fun apply(builder: VpnService.Builder, ctx: Context) {
         val self = ctx.packageName
         val alive = chosen.value.filter { it != self && installed(ctx, it) }
 
@@ -166,15 +166,14 @@ object SplitTunnel {
             // читающему: видно, что исключение безусловное.
             addDisallowed(builder, self, ctx)
             for (p in alive) addDisallowed(builder, p, ctx)
-            // RU-ПРИЛОЖЕНИЯ МИМО (переключатель «RU-адреса напрямую»): банки,
-            // госуслуги, маркетплейсы. Список человека не трогаем — добавляем
-            // поверх него, только в этот туннель. В режиме «через туннель»
-            // они и так мимо, если человек не выбрал их сам.
-            if (ruDirect) {
-                val ru = RuDirect.installedApps(ctx).filter { it != self && it !in alive }
-                for (p in ru) addDisallowed(builder, p, ctx)
-                TunnelLog.add("RU-адреса напрямую: российских приложений мимо туннеля ${ru.size}")
-            }
+            // РОССИЙСКИЕ ПРИЛОЖЕНИЯ МИМО ПО УМОЛЧАНИЮ (решение владельца 26.09):
+            // банки, госуслуги, маркетплейсы. Без переключателя и без вопроса:
+            // дефолт для новых клиентов. Список человека не трогаем —
+            // добавляем поверх него. В режиме «через туннель» они и так
+            // мимо, если человек не выбрал их сам.
+            val ru = RuDirect.installedApps(ctx).filter { it != self && it !in alive }
+            for (p in ru) addDisallowed(builder, p, ctx)
+            TunnelLog.add("российских приложений мимо туннеля: ${ru.size}")
             TunnelLog.add(
                 if (alive.isEmpty()) "раздельный туннель: мимо идёт только само приложение"
                 else "раздельный туннель: мимо идут ${alive.size} приложений и само приложение"
@@ -187,9 +186,7 @@ object SplitTunnel {
             )
         }
 
-        // Запоминаем ЖЕЛАНИЕ человека, а не применённое: на прямом пути
-        // переключатель ничего не делает, и расхождения с ним быть не должно.
-        applied = signature(RuDirect.enabled())
+        applied = signature()
     }
 
     private fun addDisallowed(builder: VpnService.Builder, pkg: String, ctx: Context) {
@@ -228,8 +225,8 @@ object SplitTunnel {
         applied = null
     }
 
-    private fun signature(ru: Boolean = RuDirect.enabled()): String =
-        mode.value.name + ":" + chosen.value.sorted().joinToString(",") + ":ru=" + ru
+    private fun signature(): String =
+        mode.value.name + ":" + chosen.value.sorted().joinToString(",")
 
     fun installed(ctx: Context, pkg: String): Boolean = try {
         ctx.packageManager.getApplicationInfo(pkg, 0)

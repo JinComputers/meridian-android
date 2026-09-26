@@ -148,6 +148,22 @@ object PathMemory {
         return if (n % maxOf(2, probeEvery) != 0) hosts else emptySet()
     }
 
+    /**
+     * Последняя достоверная скорость РЕЛЕЯ на этой сети (кбит/с; замер без
+     * больших потерь). Нужна, чтобы прямой путь сравнивался с релеем, а не
+     * только с фиксированным порогом: в логе 26.09 поток давал 3,3 Мбит/с
+     * (выше порога), а релей 11,7 — и уходить с потока было нужно.
+     */
+    private const val RELAY_KBPS_SUFFIX = "#relayKbps"
+
+    fun relayKbps(ctx: Context, key: String): Int =
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getInt(key + RELAY_KBPS_SUFFIX, 0)
+
+    fun noteRelayKbps(ctx: Context, key: String, kbps: Int) {
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putInt(key + RELAY_KBPS_SUFFIX, maxOf(1, kbps)).apply()
+    }
+
     /** Замеренная скорость прямого пути, кбит/с; 0 — пометки нет. */
     fun slowKbps(ctx: Context, key: String): Int =
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getInt(key + SLOW_SUFFIX, 0)
@@ -197,7 +213,12 @@ object PathMemory {
 
                 caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> {
                     val tm = ctx.getSystemService(TelephonyManager::class.java)
-                    val op = tm?.networkOperatorName?.takeIf { it.isNotBlank() } ?: "оператор?"
+                    // КОД СЕТИ (MCC+MNC), А НЕ ИМЯ: имя у одного оператора
+                    // меняется («MTS 5G» / «MTS RUS») и разрывало память пути:
+                    // лог 26.09 — «запомнено: ничего» после смены подписи.
+                    val op = tm?.networkOperator?.takeIf { it.isNotBlank() }
+                        ?: tm?.networkOperatorName?.takeIf { it.isNotBlank() }
+                        ?: "оператор?"
                     "CELLULAR/$op"
                 }
 

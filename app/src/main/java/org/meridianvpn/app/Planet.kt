@@ -231,7 +231,9 @@ fun Planet(
         // меридианы белые, а внутренность (заливка сферы) остаётся ЧЁРНОЙ:
         // залитая белым планета била бы по глазам.
         val whiteNow = connected && white
-        val sphereColor = if (connected && !whiteNow) Brand.sphere else Brand.space
+        // Внутренность ЧЁРНАЯ ВСЕГДА, и после подключения тоже, не только в белом
+        // режиме (просьба владельца 26.09): синяя заливка сферы уходит.
+        val sphereColor = Brand.space
         val edgeColor = when {
             whiteNow -> Brand.edgeWhite
             connected -> Brand.edge

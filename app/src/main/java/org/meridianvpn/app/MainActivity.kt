@@ -59,7 +59,6 @@ class MainActivity : ComponentActivity() {
         TransportSetting.attach(this)
         HashStore.attach(this)
         SplitTunnel.attach(this)
-        RuDirect.attach(this)
         Access.attach(this)
         ApiClient.attach(this)
         Params.attach(this)
@@ -350,9 +349,6 @@ fun TunnelScreen(modifier: Modifier = Modifier, onSettings: () -> Unit = {}) {
 
         // Ключ, пришедший ссылкой из бота, — ждёт подтверждения.
         KeyLinkPrompt(onConnect = connect)
-
-        // Банки мимо VPN — предложение один раз (BankOffer).
-        BankOffer()
 
         // Уведомление о новой версии (просьба владельца 14.09). В сборке
         // для Play — пусто, и не веткой, а отсутствием кода: см.

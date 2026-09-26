@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -401,7 +402,7 @@ func (s *session) fetchCreds(ctx context.Context, c candidate, batch int, prot P
 
 		cache.mu.Lock()
 		st := cache.state[hash]
-		got, ok := sharedCredsGet(hash)
+		got, ok := sharedCredsGet(credsKey(hash, batch, len(c.hashes)))
 		cache.mu.Unlock()
 
 		if st != hashOK {
@@ -468,8 +469,8 @@ func (s *session) fetchCreds(ctx context.Context, c candidate, batch int, prot P
 
 		if err == nil {
 			cache.mu.Lock()
-			creds.hash = hash
-			sharedCredsPut(hash, cachedCreds{creds: creds, until: time.Now().Add(vkCredsTTL)})
+			creds.hash = credsKey(hash, batch, len(c.hashes))
+			sharedCredsPut(creds.hash, cachedCreds{creds: creds, until: time.Now().Add(vkCredsTTL)})
 			// Сработал — отсрочку и счётчик промахов забываем.
 			delete(cache.deferred, hash)
 			cache.mu.Unlock()
@@ -493,6 +494,7 @@ func (s *session) fetchCreds(ctx context.Context, c candidate, batch int, prot P
 			// может быть жив, а релея не оказалось на этот раз.
 			s.logf("VK: по хешу %s релея нет (%v) — хеш НЕ помечаю, беру следующий",
 				shortHash(hash), err)
+			credsRelaxNext.Store(true)
 		case errors.Is(err, errVKDead):
 			cache.mu.Lock()
 			cache.state[hash] = hashDead
@@ -1117,4 +1119,15 @@ func genName() (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf("Guest%02x%02x%02x", b[0], b[1], b[2]), nil
+}
+
+// credsKey — ключ кэша комплектов. Пачка идёт на хеш по кругу
+// (batch % число хешей), и когда пачек больше, чем ссылок, следующий круг
+// обязан взять НОВЫЙ комплект на том же хеше (у релея квота девять на
+// комплект): без «номера круга» в ключе кэш отдал бы уже исчерпанный.
+func credsKey(hash string, batch, hashes int) string {
+	if hashes < 1 || batch < hashes {
+		return hash
+	}
+	return hash + "#" + strconv.Itoa(batch/hashes)
 }

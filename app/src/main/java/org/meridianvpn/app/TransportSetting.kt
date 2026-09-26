@@ -47,6 +47,16 @@ object TransportSetting {
         TunnelLog.add("режим транспорта переключён: $next")
     }
 
+    /** Задать режим напрямую (переключатель «только релей» в отладке). */
+    fun set(ctx: Context, next: Config.TransportMode) {
+        mode.value = next
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY, next.name)
+            .apply()
+        TunnelLog.add("режим транспорта задан: $next")
+    }
+
     /** Человеческое имя для кнопки. */
     fun label(): String = when (mode.value) {
         Config.TransportMode.AUTO -> "Транспорт: авто"

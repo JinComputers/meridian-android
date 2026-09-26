@@ -590,7 +590,6 @@ class MeridianVpnService : VpnService() {
         TransportSetting.attach(this)
         HashStore.attach(this)
         SplitTunnel.attach(this)
-        RuDirect.attach(this)
         Access.attach(this)
         ApiClient.attach(this)
         Params.attach(this)
@@ -1307,10 +1306,7 @@ class MeridianVpnService : VpnService() {
                 val mtu = Engine.mtu()
                 TunnelLog.event("MTU туннеля: $mtu")
 
-                // Туннель собирается функцией, а не один раз: если система не
-                // примет маршруты «RU-адреса напрямую» (их тысячи), собираем
-                // заново без них — см. establish ниже.
-                fun makeBuilder(ru: Boolean): Builder {
+                fun makeBuilder(): Builder {
                 val builder = Builder()
                     .setSession("Meridian")
                     .addAddress(address, prefix)
@@ -1328,9 +1324,7 @@ class MeridianVpnService : VpnService() {
                     // работы 04.09. Своего резолвера у нас нет — кот 2
                     // проверил на VPS, 53-й порт не слушает никто.
                     .setMtu(mtu)
-                // Маршрут по умолчанию — через RuDirect: без переключателя это
-                // прежний 0.0.0.0/0, с ним — он же минус российские блоки.
-                RuDirect.addRoutes(builder, this@MeridianVpnService, ru)
+                builder.addRoute("0.0.0.0", 0)
                 for (s in DNS_SERVERS) builder.addDnsServer(s)
 
                 // ОБЪЯВЛЕННЫЕ РЕЗОЛВЕРЫ — В ЛОГ, ИЗ ТОГО ЖЕ СПИСКА.
@@ -1388,21 +1382,14 @@ class MeridianVpnService : VpnService() {
                 //
                 // Здесь же наше собственное приложение выводится из
                 // туннеля — разбор в SplitTunnel.apply().
-                SplitTunnel.apply(builder, this@MeridianVpnService, ru)
+                SplitTunnel.apply(builder, this@MeridianVpnService)
                 return builder
                 }
 
-                // БЕЛЫЙ РЕЖИМ = победил релей (просьба владельца 26.09). Только
-                // здесь «RU-адреса напрямую» применяются: на прямых путях они
-                // ломали зарубежное (ютуб отдаётся с адресов внутри российских
-                // блоков), а нужны они там, где иначе всё, кроме российского,
-                // не работает вовсе — то есть на белых списках.
+                // БЕЛЫЙ РЕЖИМ = победил релей: по этому признаку планета
+                // рисуется белым контуром (просьба владельца 26.09).
                 val whiteMode = winner == Paths.RELAY
-                val ruWanted = RuDirect.enabled() && whiteMode
-                if (RuDirect.enabled() && !whiteMode) {
-                    TunnelLog.add("RU-адреса напрямую: включено, но путь не релей — не применяю")
-                }
-                val builder = makeBuilder(ruWanted)
+                val builder = makeBuilder()
 
                 notePrivateDns()
 
@@ -1412,20 +1399,8 @@ class MeridianVpnService : VpnService() {
                     TunnelLog.event("подключение остановлено нажатием")
                     return@thread
                 }
-                val pfd = try {
-                    builder.establish()
-                } catch (e: Throwable) {
-                    // Тысячи маршрутов могут не пролезть в один вызов к системе
-                    // (предел размера передачи между процессами) — тогда туннель
-                    // без RU-исключений лучше, чем никакого.
-                    if (!ruWanted) throw e
-                    TunnelLog.add(
-                        "RU-адреса напрямую: система не приняла маршруты " +
-                            "(${e.javaClass.simpleName}: ${e.message}) — поднимаю туннель без них"
-                    )
-                    Notice.say("RU-адреса напрямую не применились на этом телефоне — весь трафик идёт через VPN")
-                    makeBuilder(false).establish()
-                } ?: throw IllegalStateException("establish() вернул null — разрешение отозвано?")
+                val pfd = builder.establish()
+                    ?: throw IllegalStateException("establish() вернул null — разрешение отозвано?")
 
                 // KILL SWITCH: заглушку этот establish() уже сменил сам
                 // (Android заменяет интерфейс службы атомарно при
@@ -1917,6 +1892,7 @@ class MeridianVpnService : VpnService() {
                     // замер скорость релея занижает — сравнивать с прямым по нему
                     // нельзя, пометку не трогаем.
                     if (loss >= SLOW_LOSS_PCT) return@thread
+                    PathMemory.noteRelayKbps(this, netKey, kbps.toInt())
                     val prev = PathMemory.slowKbps(this, netKey)
                     if (prev > 0 && kbps < prev * 3 / 2) {
                         PathMemory.clearSlow(this, netKey)
@@ -1928,7 +1904,11 @@ class MeridianVpnService : VpnService() {
 
                 // Вход (адрес узла), на котором поднялись.
                 val host = nodeIds[path]?.let { id -> Params.nodes().firstOrNull { it.id == id }?.host }
-                val slow = kbps < SLOW_KBPS
+                // Медленно — и по порогу, и по сравнению с релеем этой сети:
+                // если релей там заметно быстрее (вдвое и больше), прямой
+                // путь тоже уступает, даже когда сам выше порога.
+                val relayKbps = PathMemory.relayKbps(this, netKey)
+                val slow = kbps < SLOW_KBPS || (relayReady && relayKbps > 0 && kbps * 2 < relayKbps)
                 if (!slow) {
                     // Вход снова быстр — снимаем с него пометку.
                     if (host != null && host in PathMemory.slowHosts(this, netKey)) {
@@ -2491,7 +2471,7 @@ class MeridianVpnService : VpnService() {
                     // Пул к тому же и есть правда: работаем мы с ним, а
                     // не с засевом.
                     "креды: цепочка VK, ссылок ${hashes.size}, " +
-                        "потолок слотов 16 (пачки 9 + 7)"
+                        "потолок слотов ${Config.SLOTS_MAX} (пачки по 9)"
                 )
             } else {
                 // Хешей нет — релею идти не с чем. Ступень останется в
