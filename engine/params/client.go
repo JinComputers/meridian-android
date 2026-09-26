@@ -314,7 +314,7 @@ func (c *Client) one(ctx context.Context, a Address, path string, params map[str
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
-		return Unavailable{Why: err.Error()}
+		return Unavailable{Why: scrubErr(err)}
 	}
 	req.Header.Set("Accept", "application/json")
 
@@ -322,12 +322,12 @@ func (c *Client) one(ctx context.Context, a Address, path string, params map[str
 	if err != nil {
 		// Сюда же приходит и провал пина: для человека это «не
 		// дозвонились», сервер «не тот» всё равно что сервера нет.
-		return Unavailable{Why: err.Error()}
+		return Unavailable{Why: scrubErr(err)}
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return Unavailable{Why: err.Error()}
+		return Unavailable{Why: scrubErr(err)}
 	}
 	return c.interpret(a.Host, resp.StatusCode, body)
 }
@@ -393,4 +393,16 @@ func (c *Client) resolvingDial(d *net.Dialer) func(ctx context.Context, network,
 		}
 		return nil, last
 	}
+}
+
+// scrubErr — текст ошибки запроса БЕЗ адреса запроса. *url.Error всегда несёт
+// полный URL, а параметры (в том числе key) у нас идут в строке запроса:
+// сырой err.Error() клал ключ подписчика в текст, который платформы пишут в
+// журнал как есть (найдено котом 5 при замере скорости, 26.09).
+func scrubErr(err error) string {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return ue.Op + ": " + ue.Err.Error()
+	}
+	return err.Error()
 }

@@ -360,6 +360,7 @@ class MeridianVpnService : VpnService() {
         reason.contains(REASON_MUTE) -> REASON_MUTE
         reason.contains(REASON_SILENCE) -> REASON_SILENCE
         reason.contains("замена медленного пути") -> "переход на более быстрый путь"
+        reason.contains("сеть сессии") -> "сеть пропала или сменила адрес"
         reason.startsWith("свой перезапуск") -> "смена сети или перезапуск"
         reason.startsWith("движок нашёл обрыв") -> "обрыв канала"
         else -> ""
@@ -1112,7 +1113,14 @@ class MeridianVpnService : VpnService() {
                 // нему speedGuard уходит с медленного пути на релей.
                 try { Engine.setSpeedProbe(true) } catch (t: Throwable) { }
 
-                val ladder = buildLadder(knownId, skipDirect, secondRoundMs, skipStreams)
+                // Входы, на которых замер показал низкую скорость: обходим их,
+                // пока есть другие (speedGuard, PathMemory.avoidHostsNow).
+                val avoidHosts = PathMemory.avoidHostsNow(this, netKey, probeEvery)
+                if (avoidHosts.isNotEmpty() && !skipDirect) {
+                    TunnelLog.event("вход на этой сети медленный — пробую другой вход")
+                }
+
+                val ladder = buildLadder(knownId, skipDirect, secondRoundMs, skipStreams, avoidHosts)
                 TunnelLog.add(
                     "лестница: ${ladder.len()} ступеней, режим ${TransportSetting.mode.value}" +
                         if (Config.SIMULATE_DIRECT_BLOCKED) ", ИМИТАЦИЯ закрытого прямого пути" else ""
@@ -1178,6 +1186,10 @@ class MeridianVpnService : VpnService() {
                         if (skipDirectMute) PathMemory.clearDirectMute(this, netKey)
                         if (skipSlow) PathMemory.clearSlow(this, netKey)
                         TunnelLog.add("релей тоже не поднялся — пропуск прямого снят")
+                    }
+                    // Обходили медленный вход, а другие тоже не поднялись — обход снимаем.
+                    if (avoidHosts.isNotEmpty() && !networkChanged()) {
+                        PathMemory.clearSlowHosts(this, netKey)
                     }
 
                     // То же и для пропуска потока: шли мимо него сразу
@@ -1802,7 +1814,14 @@ class MeridianVpnService : VpnService() {
     private fun onUnderlyingLost(lost: Network) {
         if (lost != sessionNetwork) return
         TunnelLog.add("пропала сеть, на которой стоит сессия — переподключаюсь")
-        TunnelLog.event("сеть пропала")
+        // Через сколько секунд после подъёма и какая по счёту сеть: по логам
+        // клиента 26.09 сеть «пропадала» раз за разом через 40-50 секунд после
+        // подъёма, и по строке без этих двух чисел причину было не найти.
+        val after = if (connectedAt > 0L) (System.currentTimeMillis() - connectedAt) / 1000 else -1L
+        TunnelLog.event(
+            "сеть пропала (сеть №${lost.networkHandle}" +
+                (if (after >= 0) ", через $after с после подъёма" else "") + ")"
+        )
         scheduleReconnect("сеть сессии пропала")
     }
 
@@ -1819,7 +1838,11 @@ class MeridianVpnService : VpnService() {
     private fun onUnderlyingAddrChanged(net: Network) {
         if (net != sessionNetwork) return
         TunnelLog.add("сеть сессии сменила адрес — сокет мёртв, переподключаюсь")
-        TunnelLog.event("сеть сменила адрес")
+        val after = if (connectedAt > 0L) (System.currentTimeMillis() - connectedAt) / 1000 else -1L
+        TunnelLog.event(
+            "сеть сменила адрес (сеть №${net.networkHandle}" +
+                (if (after >= 0) ", через $after с после подъёма" else "") + ")"
+        )
         scheduleReconnect("сеть сессии сменила адрес")
     }
 
@@ -1889,19 +1912,46 @@ class MeridianVpnService : VpnService() {
                 TunnelLog.event("замер скорости: $kbps кбит/с, потери $loss%")
 
                 if (path == Paths.RELAY) {
+                    // ПАЧКА В ОДИН МИГ НА РЕЛЕЕ ЧАСТО РЕЖЕТСЯ САМИМ РЕЛЕЕМ (лог
+                    // 26.09: ответов 3 из 40 и 7 из 40 при живом туннеле). Такой
+                    // замер скорость релея занижает — сравнивать с прямым по нему
+                    // нельзя, пометку не трогаем.
+                    if (loss >= SLOW_LOSS_PCT) return@thread
                     val prev = PathMemory.slowKbps(this, netKey)
                     if (prev > 0 && kbps < prev * 3 / 2) {
                         PathMemory.clearSlow(this, netKey)
+                        PathMemory.clearSlowHosts(this, netKey)
                         TunnelLog.event("запасной путь не быстрее прямого — оставляю обычный порядок")
                     }
                     return@thread
                 }
-                if (!relayReady) return@thread
-                if (kbps >= SLOW_KBPS && loss < SLOW_LOSS_PCT) return@thread
+
+                // Вход (адрес узла), на котором поднялись.
+                val host = nodeIds[path]?.let { id -> Params.nodes().firstOrNull { it.id == id }?.host }
+                val slow = kbps < SLOW_KBPS
+                if (!slow) {
+                    // Вход снова быстр — снимаем с него пометку.
+                    if (host != null && host in PathMemory.slowHosts(this, netKey)) {
+                        PathMemory.removeSlowHost(this, netKey, host)
+                    }
+                    return@thread
+                }
                 if (generation.get() != gen || shuttingDown.get()) return@thread
 
-                PathMemory.markSlow(this, netKey, kbps.toInt())
-                TunnelLog.event("путь медленный — перехожу на запасной")
+                // СНАЧАЛА ДРУГОЙ ВХОД, ПОТОМ РЕЛЕЙ. У клиента 26.09 медленными
+                // были A и G, и оба на одном входе; второй вход лестницы не
+                // пробовался. Это же работает и без ссылок VK (релея нет).
+                val allHosts = Params.nodes().map { it.host }.toSet()
+                val tried = PathMemory.slowHosts(this, netKey) + listOfNotNull(host)
+                if (host != null && tried.size < allHosts.size) {
+                    PathMemory.addSlowHost(this, netKey, host)
+                    TunnelLog.event("вход медленный — пробую другой вход")
+                } else if (relayReady) {
+                    PathMemory.markSlow(this, netKey, kbps.toInt())
+                    TunnelLog.event("путь медленный — перехожу на запасной")
+                } else {
+                    return@thread
+                }
                 connectedAt = 0L
                 scheduleReconnect("замена медленного пути")
             } catch (e: Throwable) {
@@ -2259,6 +2309,7 @@ class MeridianVpnService : VpnService() {
         skipDirect: Boolean = false,
         secondRoundMs: Int = 0,
         skipStreams: Boolean = false,
+        avoidHosts: Set<String> = emptySet(),
     ): Ladder {
         val ladder = Engine.newLadder()
 
@@ -2328,10 +2379,14 @@ class MeridianVpnService : VpnService() {
         // UDP не поднимается, а поток поднимается и немеет, выключит оба
         // — и лестница станет чисто релейной. Ровно этого мы и хотим:
         // релей на такой сети единственный, кто держит трафик.
-        val directs: List<Node> = all.filter { n ->
+        val byKind: List<Node> = all.filter { n ->
             val stream = n.transport == "tcp" || n.transport == "tls"
             if (stream) !skipStreams else !skipDirect
         }
+        // Медленные входы обходим, но лестницу пустой не оставляем: если
+        // других нет, идём как обычно.
+        val withoutSlow = byKind.filter { it.host !in avoidHosts }
+        val directs: List<Node> = if (avoidHosts.isEmpty() || withoutSlow.isEmpty()) byKind else withoutSlow
 
         // ПОРЯДОК — ПОДСКАЗКА, А НЕ РАСПИСАНИЕ, и список остаётся
         // ПОЛНЫМ. Узлы поднимаются параллельно, победитель — первый
@@ -2350,7 +2405,7 @@ class MeridianVpnService : VpnService() {
         // «запомнено: entry-3» и следом «ступень A запомнена». Шли при
         // этом верно — по портам видно, — но читать такой лог нельзя.
         val letters = HashMap<String, String>()
-        directs.forEachIndexed { i, n -> letters[n.id] = Paths.directName(i) }
+        byKind.forEachIndexed { i, n -> letters[n.id] = Paths.directName(i) }
 
         val ordered = orderByKnown(directs, known)
 
