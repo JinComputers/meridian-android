@@ -112,6 +112,17 @@ class MeridianVpnService : VpnService() {
          */
         private const val QUICK_DROP_MS = 15_000L
 
+        /**
+         * Порог «путь медленный» для замера скорости (speedGuard): ниже этого
+         * прямой путь или поток уступает релею. У клиента 26.09 было 60-100
+         * кбит/с на прямых против 83 Мбит/с через релей; здоровая мобильная
+         * сеть даёт на порядок выше порога.
+         */
+        private const val SLOW_KBPS = 3_000L
+
+        /** Потери в пачке замера, при которых путь тоже считается плохим. */
+        private const val SLOW_LOSS_PCT = 50
+
         /** Столько «поднялся и сразу упал» подряд — сдаёмся. */
         private const val QUICK_DROP_LIMIT = 4
 
@@ -348,6 +359,7 @@ class MeridianVpnService : VpnService() {
     private fun humanReason(reason: String): String = when {
         reason.contains(REASON_MUTE) -> REASON_MUTE
         reason.contains(REASON_SILENCE) -> REASON_SILENCE
+        reason.contains("замена медленного пути") -> "переход на более быстрый путь"
         reason.startsWith("свой перезапуск") -> "смена сети или перезапуск"
         reason.startsWith("движок нашёл обрыв") -> "обрыв канала"
         else -> ""
@@ -1040,11 +1052,17 @@ class MeridianVpnService : VpnService() {
                 // Немоту он зарабатывает, когда поднялся и умер посреди
                 // сессии (skipDirectMute) — это и есть беда жены 12.09.
                 // До сегодня учитывалась только первая.
+                // Третья причина: замер скорости показал, что на этой сети
+                // прямые пути и потоки медленные (speedGuard ниже).
+                val skipSlow = relayReady && PathMemory.skipSlow(this, netKey, probeEvery)
+                if (skipSlow) {
+                    TunnelLog.event("прямые пути на этой сети медленные — иду на запасной путь")
+                }
                 val skipDirectRace = relayReady &&
                     PathMemory.skipDirect(this, netKey, skipAfter, probeEvery)
                 val skipDirectMute = relayReady &&
                     PathMemory.skipDirectMute(this, netKey, DIRECT_MUTE_SKIP_AFTER, probeEvery)
-                val skipDirect = skipDirectRace || skipDirectMute
+                val skipDirect = skipDirectRace || skipDirectMute || skipSlow
                 if (skipDirectMute) {
                     TunnelLog.add(
                         "прямой UDP на этой сети немеет " +
@@ -1077,8 +1095,8 @@ class MeridianVpnService : VpnService() {
                 // трафик: сторож объявляет туннель немым, сессия падает,
                 // переподключение строит ту же лестницу — и круг.
                 // Разбор — в PathMemory.MUTE_SUFFIX.
-                val skipStreams = relayReady &&
-                    PathMemory.skipStreams(this, netKey, STREAM_MUTE_SKIP_AFTER, probeEvery)
+                val skipStreams = skipSlow || (relayReady &&
+                    PathMemory.skipStreams(this, netKey, STREAM_MUTE_SKIP_AFTER, probeEvery))
                 if (skipStreams) {
                     TunnelLog.add(
                         "поток на этой сети поднимается и немеет " +
@@ -1089,6 +1107,10 @@ class MeridianVpnService : VpnService() {
                 ) {
                     TunnelLog.add("проверяю, не перестали ли резать поток на этой сети")
                 }
+
+                // Замер скорости поднятого туннеля (engine/speedprobe.go): по
+                // нему speedGuard уходит с медленного пути на релей.
+                try { Engine.setSpeedProbe(true) } catch (t: Throwable) { }
 
                 val ladder = buildLadder(knownId, skipDirect, secondRoundMs, skipStreams)
                 TunnelLog.add(
@@ -1154,6 +1176,7 @@ class MeridianVpnService : VpnService() {
                         // иначе одна причина стёрла бы улику другой.
                         if (skipDirectRace) PathMemory.clearRelayStreak(this, netKey)
                         if (skipDirectMute) PathMemory.clearDirectMute(this, netKey)
+                        if (skipSlow) PathMemory.clearSlow(this, netKey)
                         TunnelLog.add("релей тоже не поднялся — пропуск прямого снят")
                     }
 
@@ -1425,6 +1448,7 @@ class MeridianVpnService : VpnService() {
                 // до этой строки просто не дошли бы.
                 Access.confirmPending()
                 TunnelState.setConnected(true, whiteMode)
+                speedGuard(gen, winner, relayReady, netKey)
                 updateNotification(connected = true)
                 connectedAt = System.currentTimeMillis()
                 // Поднялись — счётчик неудач обнуляется.
@@ -1830,6 +1854,62 @@ class MeridianVpnService : VpnService() {
      * Пауза растёт при повторных неудачах, а число попыток ограничено:
      * в мигающей сети иначе получится вечный цикл переподключений.
      */
+    /**
+     * САМ УХОДИТ С МЕДЛЕННОГО ПУТИ (просьба владельца 26.09).
+     *
+     * Лестница выбирает путь по тому, кто первым прошёл рукопожатие, а не по
+     * скорости: у клиента 26.09 прямые пути A и G давали 0,06-0,1 Мбит/с, а
+     * релей на той же сети — 83. Здесь читается замер движка (speedprobe.go).
+     * Медленный прямой путь или поток при доступном релее — помечаем сеть
+     * (PathMemory.markSlow) и переподключаемся: следующий подъём идёт на
+     * релей, а прямой щупается раз в несколько попыток. На релее замер
+     * сверяется с прямым: если релей не быстрее (менее чем в полтора раза),
+     * пометка снимается, чтобы не держаться за путь без выигрыша.
+     *
+     * connectedAt обнуляем перед переподключением: это плановая смена пути, а
+     * не «поднялся и сразу упал» (QUICK_DROP_*).
+     */
+    private fun speedGuard(gen: Int, path: String, relayReady: Boolean, netKey: String) {
+        thread(name = "meridian-speed-guard") {
+            try {
+                var st = 0
+                for (i in 0 until 100) {
+                    if (generation.get() != gen || shuttingDown.get()) return@thread
+                    st = Engine.speedProbeState().toInt()
+                    if (st == 2 || st == 3) break
+                    Thread.sleep(100)
+                }
+                if (st == 3) {
+                    TunnelLog.event("замер скорости: шлюз не ответил")
+                    return@thread
+                }
+                if (st != 2) return@thread
+                val kbps = Engine.speedProbeKbps()
+                val loss = Engine.speedProbeLossPct().toInt()
+                TunnelLog.event("замер скорости: $kbps кбит/с, потери $loss%")
+
+                if (path == Paths.RELAY) {
+                    val prev = PathMemory.slowKbps(this, netKey)
+                    if (prev > 0 && kbps < prev * 3 / 2) {
+                        PathMemory.clearSlow(this, netKey)
+                        TunnelLog.event("запасной путь не быстрее прямого — оставляю обычный порядок")
+                    }
+                    return@thread
+                }
+                if (!relayReady) return@thread
+                if (kbps >= SLOW_KBPS && loss < SLOW_LOSS_PCT) return@thread
+                if (generation.get() != gen || shuttingDown.get()) return@thread
+
+                PathMemory.markSlow(this, netKey, kbps.toInt())
+                TunnelLog.event("путь медленный — перехожу на запасной")
+                connectedAt = 0L
+                scheduleReconnect("замена медленного пути")
+            } catch (e: Throwable) {
+                TunnelLog.add("сторож скорости: ${e.message}")
+            }
+        }
+    }
+
     private fun scheduleReconnect(reason: String, engineAlreadyStopped: Boolean = false) {
         if (shuttingDown.get()) return
         if (!reconnectPending.compareAndSet(false, true)) return

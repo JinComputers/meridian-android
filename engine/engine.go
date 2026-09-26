@@ -106,6 +106,9 @@ var (
 	// не выходят.
 	lastAuthGateway atomic.Value
 	lastAuthMaskHex atomic.Value
+	// Свой адрес в туннеле из того же ответа: нужен замеру скорости
+	// (speedprobe.go) как адрес отправителя эха.
+	lastAuthIP atomic.Value
 )
 
 // Connect проходит лестницу транспорта и поднимает сессию на первой
