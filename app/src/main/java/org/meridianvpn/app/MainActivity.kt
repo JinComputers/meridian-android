@@ -323,6 +323,7 @@ fun TunnelScreen(modifier: Modifier = Modifier, onSettings: () -> Unit = {}) {
             Planet(
                 connected = connected,
                 busy = TunnelState.busy.value,
+                white = TunnelState.white.value,
                 // ПОКА ПОДНИМАЕМСЯ — НАЖАТИЕ ОСТАНАВЛИВАЕТ ПОДЪЁМ
                 // (просьба владельца 24.09).
                 //

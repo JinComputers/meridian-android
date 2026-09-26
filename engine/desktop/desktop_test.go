@@ -57,6 +57,51 @@ func TestStartClosesEventsOnConnectFailure(t *testing.T) {
 	}
 }
 
+// TestStartAbortsLadderOnContextCancel — регрессия на настоящий баг: до
+// этой правки сторожевая горутина, зовущая engine.Stop(), заводилась
+// ПОСЛЕ возврата engine.Connect, то есть отмена ctx во время самой
+// лестницы (второе нажатие «стоп», пока подключение ещё не встало)
+// никем не принималась вплоть до её собственного исхода — до
+// ladderBudget (25с, session.go) или как минимум minCandidateBudget/
+// raceHandshakeBudget (1.5-10с) на одном кандидате.
+//
+// Единственный кандидат — TEST-NET-1 (192.0.2.1, RFC 5737): гарантированно
+// не отвечает ни в одной сети, значит climb() реально виснет на попытке,
+// а не проваливается сам по себе. Отмена ctx приходит вскоре после
+// старта — Start обязан вернуться на порядки быстрее любого из
+// перечисленных внутренних сроков, иначе сторож всё ещё не смотрит на
+// ctx во время лестницы.
+func TestStartAbortsLadderOnContextCancel(t *testing.T) {
+	ladder := engine.NewLadder()
+	ladder.AddTCP("A", "192.0.2.1", 443)
+	cfg := Config{
+		Gateway:   "192.0.2.1",
+		Ladder:    ladder,
+		Password:  "test",
+		DeviceID:  "test",
+		Protector: fakeProtector{},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(100*time.Millisecond, cancel)
+
+	done := make(chan struct{})
+	var err error
+	go func() {
+		defer close(done)
+		_, _, err = Start(ctx, cfg, fakeFlow{})
+	}()
+
+	select {
+	case <-done:
+		if err == nil {
+			t.Error("ожидал ошибку: лестница должна была оборваться отменой ctx, а не подняться")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Start не вернулся за 3с после отмены ctx — сторож не следит за лестницей вовремя (см. комментарий у Start)")
+	}
+}
+
 func TestCurrentStatusWithoutSession(t *testing.T) {
 	// Без сессии — нулевые значения, без паники. Не гарантирует, что
 	// СОВСЕМ нет активной сессии (Active — общий пакетный флаг), но саму

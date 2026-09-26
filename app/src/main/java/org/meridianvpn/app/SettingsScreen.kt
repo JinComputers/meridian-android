@@ -200,7 +200,7 @@ private fun RuDirectRow() {
         Column(modifier = Modifier.weight(1f)) {
             Text("RU-адреса напрямую", color = Brand.text, fontSize = 17.sp)
             Text(
-                "банки, госуслуги, маркетплейсы и российские сайты — мимо VPN",
+                "банки, госуслуги, маркетплейсы — мимо VPN, только в режиме белых списков",
                 color = Brand.dim,
                 fontSize = 13.sp,
             )
