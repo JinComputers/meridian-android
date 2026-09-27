@@ -1054,7 +1054,7 @@ class MeridianVpnService : VpnService() {
                 // До сегодня учитывалась только первая.
                 // Третья причина: замер скорости показал, что на этой сети
                 // прямые пути и потоки медленные (speedGuard ниже).
-                val skipSlow = relayReady && PathMemory.skipSlow(this, netKey, probeEvery)
+                val skipSlow = false // замер скорости выключен 27.09, старые пометки не читаем
                 if (skipSlow) {
                     TunnelLog.event("прямые пути на этой сети медленные — иду на запасной путь")
                 }
@@ -1110,11 +1110,11 @@ class MeridianVpnService : VpnService() {
 
                 // Замер скорости поднятого туннеля (engine/speedprobe.go): по
                 // нему speedGuard уходит с медленного пути на релей.
-                try { Engine.setSpeedProbe(true) } catch (t: Throwable) { }
+                try { Engine.setSpeedProbe(false) } catch (t: Throwable) { }
 
                 // Входы, на которых замер показал низкую скорость: обходим их,
                 // пока есть другие (speedGuard, PathMemory.avoidHostsNow).
-                val avoidHosts = PathMemory.avoidHostsNow(this, netKey, probeEvery)
+                val avoidHosts = emptySet<String>() // замер скорости выключен 27.09
                 if (avoidHosts.isNotEmpty() && !skipDirect) {
                     TunnelLog.event("вход на этой сети медленный — пробую другой вход")
                 }
@@ -1435,7 +1435,8 @@ class MeridianVpnService : VpnService() {
                 // до этой строки просто не дошли бы.
                 Access.confirmPending()
                 TunnelState.setConnected(true, whiteMode)
-                speedGuard(gen, winner, relayReady, netKey)
+                // Замер скорости и уход с медленного пути ВЫКЛЮЧЕНЫ (решение владельца 27.09:
+                // шейпа у оператора нет, сторож гонял туннель по кругу). speedGuard оставлен в коде.
                 updateNotification(connected = true)
                 connectedAt = System.currentTimeMillis()
                 // Поднялись — счётчик неудач обнуляется.
