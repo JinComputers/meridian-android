@@ -150,68 +150,47 @@ fun HashScreen(modifier: Modifier = Modifier, onBack: () -> Unit) {
 
         HorizontalDivider(color = Brand.sphere)
 
-        // ДВА БЛОКА: сверху ссылки VK, ниже комнаты DION (запасной источник).
+        // ДВА БЛОКА. Порядок зависит от основного звена: основной идёт выше
+        // (просьба владельца 29.09): в режиме DION комнаты выше ссылок VK.
         val vkItems = HashStore.items.filter { !HashStore.isDion(it.hash) }
         val dionItems = HashStore.items.filter { HashStore.isDion(it.hash) }
         LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
-            item(key = "hdr-vk") {
-                Text(
-                    "VK — ссылки на звонки (${vkItems.size})",
-                    color = Brand.edge, fontSize = 14.sp,
-                    modifier = Modifier.padding(top = 4.dp, bottom = 2.dp),
-                )
-            }
-            items(vkItems, key = { it.hash }) { e ->
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        // Целиком: человек должен узнавать свои. В лог
-                        // ссылка уходит обрезанной, а в выгрузку не
-                        // попадает вовсе.
-                        Text(e.hash, color = Brand.text, fontSize = 11.sp)
-                        Text(
-                            statusText(e) + ", " + HashStore.checkedText(e),
-                            color = Brand.dim,
-                            fontSize = 12.sp,
-                        )
-                    }
-                    // Крестик без подписи: значок понятен сам по себе.
-                    DeleteButton(onClick = { HashStore.remove(e.hash) })
+            for (dionSection in (if (primaryDion) listOf(true, false) else listOf(false, true))) {
+                val list = if (dionSection) dionItems else vkItems
+                item(key = if (dionSection) "hdr-dion" else "hdr-vk") {
+                    Text(
+                        if (dionSection) "Комнаты DION (${list.size} из ${HashStore.MAX_DION_ROOMS})"
+                        else "VK — ссылки на звонки (${list.size})",
+                        color = Brand.edge, fontSize = 14.sp,
+                        modifier = Modifier.padding(top = 10.dp, bottom = 2.dp),
+                    )
                 }
-                HorizontalDivider(color = Brand.sphere)
-            }
-            item(key = "hdr-dion") {
-                Text(
-                    (if (primaryDion) "Комнаты DION" else "Запасные комнаты DION") + " (${dionItems.size} из ${HashStore.MAX_DION_ROOMS})",
-                    color = Brand.edge, fontSize = 14.sp,
-                    modifier = Modifier.padding(top = 14.dp, bottom = 2.dp),
-                )
-            }
-            items(dionItems, key = { it.hash }) { e ->
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        // Целиком: человек должен узнавать свои. В лог
-                        // ссылка уходит обрезанной, а в выгрузку не
-                        // попадает вовсе.
-                        Text(e.hash, color = Brand.text, fontSize = 11.sp)
-                        Text(
-                            statusText(e) + ", " + HashStore.checkedText(e),
-                            color = Brand.dim,
-                            fontSize = 12.sp,
-                        )
-                    }
-                    // Крестик без подписи: значок понятен сам по себе.
-                    DeleteButton(onClick = { HashStore.remove(e.hash) })
-                }
-                HorizontalDivider(color = Brand.sphere)
+                items(list, key = { it.hash }) { e -> HashRow(e) }
             }
         }
     }
+}
+
+@Composable
+private fun HashRow(e: HashStore.Entry) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            // Целиком: человек должен узнавать свои. В лог ссылка уходит
+            // обрезанной, а в выгрузку не попадает вовсе.
+            Text(e.hash, color = Brand.text, fontSize = 11.sp)
+            Text(
+                statusText(e) + ", " + HashStore.checkedText(e),
+                color = Brand.dim,
+                fontSize = 12.sp,
+            )
+        }
+        // Крестик без подписи: значок понятен сам по себе.
+        DeleteButton(onClick = { HashStore.remove(e.hash) })
+    }
+    HorizontalDivider(color = Brand.sphere)
 }
 
 /**
@@ -263,10 +242,19 @@ private fun HowTo(ctx: Context) {
             fontSize = 13.sp,
             modifier = Modifier.padding(top = 8.dp),
         )
+        // Нажимаемая строка, как у VK: приложение Dion в Google Play (по ссылке от
+        // владельца). Имени пакета Dion мы не знаем, поэтому запуска установленного
+        // приложения нет: открывается страница поиска в магазине.
+        Text(
+            "Открыть Dion в Google Play",
+            color = Brand.edge,
+            fontSize = 13.sp,
+            modifier = Modifier.clickable { openDionStore(ctx) },
+        )
         for (line in listOf(
             "1. Нужна комната на dion.vc с включённым входом для гостей: без входа гостем она не подойдёт",
             "2. Скопировать ссылку комнаты вида https://dion.vc/event/…",
-            "3. Вставить ссылку в поле выше — она появится в блоке «Dion — комнаты»",
+            "3. Вставить ссылку в поле выше — она появится в блоке «Комнаты DION»",
         )) {
             Text(line, color = Brand.dim, fontSize = 13.sp)
         }
@@ -400,4 +388,18 @@ private suspend fun checkAll(ctx: Context, say: (String) -> Unit) {
         }
     }
     say("готово: живых $alive из ${all.size}")
+}
+
+/** Открывает поиск Dion в Google Play (магазин или браузер). */
+private fun openDionStore(ctx: Context) {
+    try {
+        ctx.startActivity(
+            Intent(
+                Intent.ACTION_VIEW,
+                Uri.parse("https://play.google.com/store/search?q=dion&c=apps&hl=ru"),
+            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
+    } catch (e: Throwable) {
+        TunnelLog.add("открыть Google Play не вышло: ${e.message}")
+    }
 }
