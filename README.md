@@ -2,7 +2,7 @@
 
 Гибридный VPN-клиент для Android
 
-**Ключ доступа — у бота [@jincomputers_bot](https://t.me/jincomputers_bot).**
+**Ключ доступа — у бота [@jincomputers_bot](https://t.me/jincomputers_bot). либо на сайте - https://meridianvpn.org/**
 
 ---
 
