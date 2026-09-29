@@ -55,6 +55,11 @@ object HashStore {
 
     val items = mutableStateListOf<Entry>()
 
+    /** Основное звено релея: Dion (иначе VK). Сохраняется; эффективный выбор — effectivePrimaryDion(). */
+    val primaryDion = androidx.compose.runtime.mutableStateOf(false)
+    private const val K_PRIMARY = "primary_dion"
+    const val MAX_DION_ROOMS = 3
+
     private var appCtx: Context? = null
     private var loaded = false
 
@@ -72,6 +77,9 @@ object HashStore {
         appCtx = ctx.applicationContext
 
         items.addAll(read())
+        primaryDion.value = try {
+            ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(K_PRIMARY, false)
+        } catch (e: Throwable) { false }
         // ЗАСЕВ ТОЛЬКО В ОТЛАДКЕ (56.4). Ссылки на звонки человек
         // заводит свои: чужие в его сборке — это чужой расход и чужая
         // капча. В отладочной сборке засев остаётся, иначе цепочку
@@ -132,8 +140,17 @@ object HashStore {
         if (parsed.isEmpty()) return "не разобрал ни одного хеша"
 
         val known = items.map { it.hash }.toHashSet()
-        val fresh = parsed.filter { known.add(it) }
-        if (fresh.isEmpty()) return "все ${parsed.size} уже в списке"
+        var dionCount = items.count { isDion(it.hash) }
+        var overLimit = 0
+        val fresh = parsed.filter { h ->
+            if (h in known) false
+            else if (isDion(h) && dionCount >= MAX_DION_ROOMS) { overLimit++; false }
+            else { if (isDion(h)) dionCount++; known.add(h) }
+        }
+        if (fresh.isEmpty()) {
+            return if (overLimit > 0) "комнат DION не больше $MAX_DION_ROOMS"
+            else "все ${parsed.size} уже в списке"
+        }
 
         items.addAll(fresh.map { Entry(it) })
         write()
@@ -141,8 +158,30 @@ object HashStore {
         else "добавлено ${fresh.size}, пропущено дублей ${parsed.size - fresh.size}"
     }
 
+    /** Dion — основное звено СЕЙЧАС: выбрано и есть живая комната. */
+    fun effectivePrimaryDion(): Boolean = primaryDion.value && dionRooms().isNotEmpty()
+
+    /**
+     * Выбор основного звена. Пустая строка — принято; иначе причина отказа.
+     * Правила (эталон Mac): нет комнат — «Сначала добавьте комнату DION»; все
+     * мёртвые — DION основным нельзя.
+     */
+    fun setPrimaryDion(on: Boolean): String {
+        if (on) {
+            if (items.none { isDion(it.hash) }) return "Сначала добавьте комнату DION"
+            if (dionRooms().isEmpty()) return "Основным DION нельзя: все комнаты мёртвые"
+        }
+        primaryDion.value = on
+        try {
+            appCtx?.getSharedPreferences(PREFS, Context.MODE_PRIVATE)?.edit()?.putBoolean(K_PRIMARY, on)?.apply()
+        } catch (e: Throwable) { }
+        return ""
+    }
+
     fun remove(hash: String) {
         items.removeAll { it.hash == hash }
+        // Удалили последнюю комнату при основном DION — возврат на VK.
+        if (primaryDion.value && items.none { isDion(it.hash) }) setPrimaryDion(false)
         write()
     }
 

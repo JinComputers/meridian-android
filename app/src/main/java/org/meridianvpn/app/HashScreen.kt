@@ -3,7 +3,15 @@ package org.meridianvpn.app
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -61,6 +69,38 @@ fun HashScreen(modifier: Modifier = Modifier, onBack: () -> Unit) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             BackButton(onClick = onBack)
             Text("Обход белых списков", color = Brand.text, fontSize = 20.sp)
+        }
+
+        // ПЕРЕКЛЮЧАТЕЛЬ ОСНОВНОГО ЗВЕНА (эталон — Mac): «VK | DION», сегментами
+        // на всю ширину. Выбранная половина залита акцентом, невыбранная прозрачная.
+        Text("Транспорт обхода белых списков", color = Brand.dim, fontSize = 13.sp)
+        val primaryDion = HashStore.effectivePrimaryDion()
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(40.dp)
+                .border(1.dp, Brand.edge, RoundedCornerShape(10.dp))
+                .clip(RoundedCornerShape(10.dp)),
+        ) {
+            for ((title, isDion) in listOf("VK" to false, "DION" to true)) {
+                val selected = primaryDion == isDion
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .background(if (selected) Brand.edge else Color.Transparent)
+                        .clickable(enabled = !busy) {
+                            note = HashStore.setPrimaryDion(isDion)
+                        },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        title,
+                        color = if (selected) Color.Black else Brand.dim,
+                        fontSize = 15.sp,
+                    )
+                }
+            }
         }
 
         OutlinedTextField(
@@ -144,7 +184,7 @@ fun HashScreen(modifier: Modifier = Modifier, onBack: () -> Unit) {
             }
             item(key = "hdr-dion") {
                 Text(
-                    "Dion — комнаты (${dionItems.size})",
+                    (if (primaryDion) "Комнаты DION" else "Запасные комнаты DION") + " (${dionItems.size} из ${HashStore.MAX_DION_ROOMS})",
                     color = Brand.edge, fontSize = 14.sp,
                     modifier = Modifier.padding(top = 14.dp, bottom = 2.dp),
                 )

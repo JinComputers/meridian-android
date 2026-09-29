@@ -457,16 +457,20 @@ func (s *session) relayCreds(ctx context.Context, c candidate, batch int, prot P
 		}
 		return turnCreds{}, errVKNoHashes
 	}
-	if batch > s.credsBatch {
-		s.credsBatch = batch
-		s.credsTaken++
-		s.logf("пачка %d (слоты с %d): нужен новый комплект — походов за кредами за сессию: %d",
-			batch+1, batch*slotsPerBatch+1, s.credsTaken)
+
+	// ОСНОВНОЕ ЗВЕНО ЗАДАЁТ ПЛАТФОРМА (SetRelayPrimaryDion): по умолчанию VK,
+	// запасное — второе. Первое звено отказало — пробуем второе.
+	if primaryIsDion() && len(c.dionSlugs) > 0 {
+		cr, err := s.dionCreds(ctx, c, batch, prot)
+		if err == nil || ctx.Err() != nil {
+			return cr, err
+		}
+		s.logf("DION (основное звено) не дал кредов (%v) — пробую VK", err)
+		return s.vkCredsCounted(ctx, c, batch, prot)
 	}
-	cr, err := s.fetchCreds(ctx, c, batch, prot)
+
+	cr, err := s.vkCredsCounted(ctx, c, batch, prot)
 	if err != nil && len(c.dionSlugs) > 0 && ctx.Err() == nil {
-		// ВК ОТКАЗАЛ — ЗАПАСНОЕ ЗВЕНО DION (решение владельца 27.09: VK первый,
-		// DION только после него).
 		s.logf("VK не дал кредов (%v) — пробую DION", err)
 		if d, derr := s.dionCreds(ctx, c, batch, prot); derr == nil {
 			return d, nil
@@ -475,6 +479,17 @@ func (s *session) relayCreds(ctx context.Context, c candidate, batch int, prot P
 		}
 	}
 	return cr, err
+}
+
+// vkCredsCounted — креды VK со счётчиком пачек (износ комплектов за сессию).
+func (s *session) vkCredsCounted(ctx context.Context, c candidate, batch int, prot Protector) (turnCreds, error) {
+	if batch > s.credsBatch {
+		s.credsBatch = batch
+		s.credsTaken++
+		s.logf("пачка %d (слоты с %d): нужен новый комплект — походов за кредами за сессию: %d",
+			batch+1, batch*slotsPerBatch+1, s.credsTaken)
+	}
+	return s.fetchCreds(ctx, c, batch, prot)
 }
 
 // dionCreds — комплект кредов из комнаты DION для пачки слотов. Комнаты идут

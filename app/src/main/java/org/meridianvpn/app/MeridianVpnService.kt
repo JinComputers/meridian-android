@@ -2460,6 +2460,8 @@ class MeridianVpnService : VpnService() {
             for (h in hashes) ladder.addRelayHash(h)
             // Комнаты DION: запасной источник кредов, только если VK не дал.
             val dion = HashStore.dionRooms()
+            // Основное звено: Dion, только если выбран и есть живая комната.
+            try { Engine.setRelayPrimaryDion(HashStore.effectivePrimaryDion()) } catch (t: Throwable) { }
             for (r in dion) ladder.addRelayDion(r)
             if (dion.isNotEmpty()) TunnelLog.add("DION: комнат ${dion.size} (запасной источник после VK)")
 

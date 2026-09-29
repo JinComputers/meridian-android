@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"sync"
 )
 
 var (
@@ -17,3 +18,24 @@ var (
 // fetchDionCredsHook — получение кредов DION; его ставит creds_dion.go. Пока
 // реализации нет, звено DION недоступно. release закрывает WS комнаты.
 var fetchDionCredsHook func(s *session, ctx context.Context, slug string, prot Protector) (turnCreds, func(), error)
+
+// relayPrimary — основное звено релея: VK (умолчание) или Dion.
+var relayPrimary struct {
+	sync.Mutex
+	dion bool
+}
+
+// SetRelayPrimaryDion ставит Dion основным звеном (RELAY_PRIMARY="dion"): его
+// креды берутся первыми, VK — запасное. Действует, только когда у релейной
+// ступени есть комнаты Dion.
+func SetRelayPrimaryDion(on bool) {
+	relayPrimary.Lock()
+	relayPrimary.dion = on
+	relayPrimary.Unlock()
+}
+
+func primaryIsDion() bool {
+	relayPrimary.Lock()
+	defer relayPrimary.Unlock()
+	return relayPrimary.dion
+}
