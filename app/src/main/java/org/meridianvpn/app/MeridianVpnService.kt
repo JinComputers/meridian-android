@@ -2458,8 +2458,12 @@ class MeridianVpnService : VpnService() {
             // человек с экрана, и мёртвые с закапчёванными пул не отдаёт.
             val hashes = HashStore.usable()
             for (h in hashes) ladder.addRelayHash(h)
+            // Комнаты DION: запасной источник кредов, только если VK не дал.
+            val dion = HashStore.dionRooms()
+            for (r in dion) ladder.addRelayDion(r)
+            if (dion.isNotEmpty()) TunnelLog.add("DION: комнат ${dion.size} (запасной источник после VK)")
 
-            if (hashes.isNotEmpty()) {
+            if (hashes.isNotEmpty() || dion.isNotEmpty()) {
                 TunnelLog.add(
                     // Считаем ПУЛ, а не список из Config.
                     //

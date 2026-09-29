@@ -358,6 +358,10 @@ type session struct {
 	credsBatch int
 	credsTaken int
 
+	// dionRelease — закрывалки WS комнат DION, открытых этой сессией.
+	dionMu      sync.Mutex
+	dionRelease []func()
+
 	// vk — кэш комплектов и разметка хешей на эту сессию.
 	//
 	// Устройства для VK здесь НЕТ намеренно. Цепочка генерирует себе
@@ -2388,6 +2392,7 @@ func (s *session) stop(reason string) {
 	}
 	s.stopped = true
 	s.mu.Unlock()
+	defer s.releaseDion()
 
 	// ПЕРВОЙ СТРОКОЙ, ДО ЗАКРЫТИЯ TUN НИЖЕ. Разбор — у OnStopping в
 	// engine.go: только так замена интерфейса на стороне Kotlin

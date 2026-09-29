@@ -451,6 +451,10 @@ func (s *session) credsForBatch(batch int, d *slotDialer) (turnCreds, error) {
 // правильно: квота релея считается на комплект.
 func (s *session) relayCreds(ctx context.Context, c candidate, batch int, prot Protector) (turnCreds, error) {
 	if len(c.hashes) == 0 {
+		// VK-ссылок нет вовсе — DION, если есть комнаты.
+		if len(c.dionSlugs) > 0 {
+			return s.dionCreds(ctx, c, batch, prot)
+		}
 		return turnCreds{}, errVKNoHashes
 	}
 	if batch > s.credsBatch {
@@ -459,5 +463,50 @@ func (s *session) relayCreds(ctx context.Context, c candidate, batch int, prot P
 		s.logf("пачка %d (слоты с %d): нужен новый комплект — походов за кредами за сессию: %d",
 			batch+1, batch*slotsPerBatch+1, s.credsTaken)
 	}
-	return s.fetchCreds(ctx, c, batch, prot)
+	cr, err := s.fetchCreds(ctx, c, batch, prot)
+	if err != nil && len(c.dionSlugs) > 0 && ctx.Err() == nil {
+		// ВК ОТКАЗАЛ — ЗАПАСНОЕ ЗВЕНО DION (решение владельца 27.09: VK первый,
+		// DION только после него).
+		s.logf("VK не дал кредов (%v) — пробую DION", err)
+		if d, derr := s.dionCreds(ctx, c, batch, prot); derr == nil {
+			return d, nil
+		} else {
+			s.logf("DION тоже не дал кредов: %v", derr)
+		}
+	}
+	return cr, err
+}
+
+// dionCreds — комплект кредов из комнаты DION для пачки слотов. Комнаты идут
+// по кругу, как хеши VK. WS комнаты остаётся открытым, пока жива сессия.
+func (s *session) dionCreds(ctx context.Context, c candidate, batch int, prot Protector) (turnCreds, error) {
+	if len(c.dionSlugs) == 0 {
+		return turnCreds{}, errDionNoRooms
+	}
+	if fetchDionCredsHook == nil {
+		return turnCreds{}, errDionDead
+	}
+	slug := c.dionSlugs[batch%len(c.dionSlugs)]
+	cr, release, err := fetchDionCredsHook(s, ctx, slug, prot)
+	if err != nil {
+		return turnCreds{}, err
+	}
+	if release != nil {
+		s.dionMu.Lock()
+		s.dionRelease = append(s.dionRelease, release)
+		s.dionMu.Unlock()
+	}
+	s.logf("DION: комплект кредов получен (пачка %d)", batch+1)
+	return cr, nil
+}
+
+// releaseDion закрывает WS всех комнат DION сессии.
+func (s *session) releaseDion() {
+	s.dionMu.Lock()
+	list := s.dionRelease
+	s.dionRelease = nil
+	s.dionMu.Unlock()
+	for _, f := range list {
+		f()
+	}
 }

@@ -70,6 +70,8 @@ object LinkWatch {
         val order = all.sortedBy { if (it.status == HashStore.ST_DEAD) 1 else 0 }
 
         for ((i, e) in order.withIndex()) {
+            // Комнаты DION в фоне не проверяем: проход — это вход гостем в чужую комнату.
+            if (HashStore.isDion(e.hash)) continue
             if (TunnelState.busy.value) {
                 TunnelLog.add("ссылки VK: начался подъём туннеля — фоновую проверку прерываю")
                 return

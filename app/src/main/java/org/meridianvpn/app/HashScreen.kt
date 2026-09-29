@@ -69,7 +69,7 @@ fun HashScreen(modifier: Modifier = Modifier, onBack: () -> Unit) {
             modifier = Modifier.fillMaxWidth(),
             enabled = !busy,
             label = { Text("Ссылка на звонок") },
-            placeholder = { Text("https://vk.com/call/join/…") },
+            placeholder = { Text("https://vk.com/call/join/… или https://dion.vc/event/…") },
         )
 
         // ПОДПИСЬ ЗДЕСЬ НУЖНА, и это осознанное исключение из правила
@@ -110,8 +110,46 @@ fun HashScreen(modifier: Modifier = Modifier, onBack: () -> Unit) {
 
         HorizontalDivider(color = Brand.sphere)
 
+        // ДВА БЛОКА: сверху ссылки VK, ниже комнаты DION (запасной источник).
+        val vkItems = HashStore.items.filter { !HashStore.isDion(it.hash) }
+        val dionItems = HashStore.items.filter { HashStore.isDion(it.hash) }
         LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
-            items(HashStore.items, key = { it.hash }) { e ->
+            item(key = "hdr-vk") {
+                Text(
+                    "VK — ссылки на звонки (${vkItems.size})",
+                    color = Brand.edge, fontSize = 14.sp,
+                    modifier = Modifier.padding(top = 4.dp, bottom = 2.dp),
+                )
+            }
+            items(vkItems, key = { it.hash }) { e ->
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        // Целиком: человек должен узнавать свои. В лог
+                        // ссылка уходит обрезанной, а в выгрузку не
+                        // попадает вовсе.
+                        Text(e.hash, color = Brand.text, fontSize = 11.sp)
+                        Text(
+                            statusText(e) + ", " + HashStore.checkedText(e),
+                            color = Brand.dim,
+                            fontSize = 12.sp,
+                        )
+                    }
+                    // Крестик без подписи: значок понятен сам по себе.
+                    DeleteButton(onClick = { HashStore.remove(e.hash) })
+                }
+                HorizontalDivider(color = Brand.sphere)
+            }
+            item(key = "hdr-dion") {
+                Text(
+                    "Dion — комнаты (${dionItems.size})",
+                    color = Brand.edge, fontSize = 14.sp,
+                    modifier = Modifier.padding(top = 14.dp, bottom = 2.dp),
+                )
+            }
+            items(dionItems, key = { it.hash }) { e ->
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -173,6 +211,22 @@ private fun HowTo(ctx: Context) {
             "4. Нажать «Поделиться ссылкой», внизу «Поделиться» — копировать " +
                 "ссылку звонка. Приложение можно закрыть",
             "5. Вставить ссылку на звонок в поле выше",
+        )) {
+            Text(line, color = Brand.dim, fontSize = 13.sp)
+        }
+
+        // DION — ниже, отдельным блоком. Шаги интерфейса dion.vc не расписываем:
+        // мы их не проверяли, а комнату создаёт человек с аккаунтом.
+        Text(
+            "Dion",
+            color = Brand.text,
+            fontSize = 13.sp,
+            modifier = Modifier.padding(top = 8.dp),
+        )
+        for (line in listOf(
+            "1. Нужна комната на dion.vc с включённым входом для гостей: без входа гостем она не подойдёт",
+            "2. Скопировать ссылку комнаты вида https://dion.vc/event/…",
+            "3. Вставить ссылку в поле выше — она появится в блоке «Dion — комнаты»",
         )) {
             Text(line, color = Brand.dim, fontSize = 13.sp)
         }
@@ -279,15 +333,20 @@ private suspend fun checkAll(ctx: Context, say: (String) -> Unit) {
                 //
                 // Решатель капчи здесь проще, чем при подключении:
                 // приложение на виду, экран откроется сразу.
-                Engine.checkHash(hash, deviceId, null, CaptchaGate.solver(ctx), logger)
+                if (HashStore.isDion(hash)) {
+                    // Комната DION: полный проход до выдачи TURN и сразу выход.
+                    Engine.checkDionRoom(hash.removePrefix(HashStore.DION_PREFIX), null, logger)
+                } else {
+                    Engine.checkHash(hash, deviceId, null, CaptchaGate.solver(ctx), logger)
+                }
             } catch (e: Throwable) {
                 "ошибка: ${e.message}"
             }
         }
         val mapped = when (status) {
-            "живой" -> HashStore.ST_ALIVE
+            "живой", "живая" -> HashStore.ST_ALIVE
             "капча" -> HashStore.ST_CAPTCHA
-            "мёртвый" -> HashStore.ST_DEAD
+            "мёртвый", "мёртвая" -> HashStore.ST_DEAD
             "релея нет" -> HashStore.ST_NO_TURN
             else -> status
         }

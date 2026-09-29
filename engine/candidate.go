@@ -89,6 +89,9 @@ type candidate struct {
 	// с внятным текстом: идти ей больше некуда.
 	hashes []string
 
+	// dionSlugs — комнаты DION (запасной источник кредов после VK).
+	dionSlugs []string
+
 	// remembered — эта ступень запомнена как рабочая для текущей сети.
 	//
 	// Такая ступень пробуется ОДНА и без гонки: гонка нужна незнакомой
@@ -317,6 +320,17 @@ func (l *Ladder) AddRelayHash(hash string) {
 	for i := len(l.items) - 1; i >= 0; i-- {
 		if l.items[i].isRelay {
 			l.items[i].hashes = append(l.items[i].hashes, hash)
+			return
+		}
+	}
+}
+
+// AddRelayDion добавляет комнату DION (slug) к последней релейной ступени.
+// DION идёт после VK: креды берутся оттуда, только если VK отказал.
+func (l *Ladder) AddRelayDion(slug string) {
+	for i := len(l.items) - 1; i >= 0; i-- {
+		if l.items[i].isRelay {
+			l.items[i].dionSlugs = append(l.items[i].dionSlugs, slug)
 			return
 		}
 	}

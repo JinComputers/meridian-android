@@ -110,7 +110,14 @@ object HashStore {
      * приложения.
      */
     fun usable(): List<String> =
-        items.filter { it.status != ST_DEAD && it.hash !in captchaHold }.map { it.hash }
+        items.filter { !isDion(it.hash) && it.status != ST_DEAD && it.hash !in captchaHold }.map { it.hash }
+
+    /** Комнаты DION (запасной источник после VK) — голые slug'и. Мёртвые не отдаём. */
+    fun dionRooms(): List<String> =
+        items.filter { isDion(it.hash) && it.status != ST_DEAD }.map { it.hash.removePrefix(DION_PREFIX) }
+
+    const val DION_PREFIX = "dion:"
+    fun isDion(hash: String): Boolean = hash.startsWith(DION_PREFIX)
 
     /** Все хеши — для затирания в выгрузке лога. */
     fun all(): List<String> = items.map { it.hash }
@@ -199,6 +206,21 @@ object HashStore {
     fun normalize(raw: String): String? {
         var s = raw.trim()
         if (s.isEmpty()) return null
+
+        // КОМНАТА DION: https://dion.vc/event/<slug>, dion.vc/event/<slug> или dion:<slug>.
+        // Хранится с префиксом dion:, чтобы отличаться от хеша VK в общем пуле.
+        run {
+            val low = s.lowercase()
+            val slug = when {
+                low.startsWith("dion:") -> s.substring(5)
+                low.contains("dion.vc/event/") -> s.substring(low.indexOf("dion.vc/event/") + 14)
+                else -> null
+            }
+            if (slug != null) {
+                val clean = slug.trim().takeWhile { it != '?' && it != '#' && it != '/' }
+                return if (Regex("^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$").matches(clean)) DION_PREFIX + clean else null
+            }
+        }
 
         if (s.startsWith("http://", true) || s.startsWith("https://", true)) {
             val marker = "/call/join/"

@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 
 	"meridian/engine"
 )
@@ -138,27 +139,60 @@ type logFunc func(string)
 func (f logFunc) Log(line string) { f(line) }
 
 type stateAdapter struct {
-	events chan<- Event
+	sink *eventSink
 }
 
 func (a stateAdapter) OnStopping(reason string) {
-	trySend(a.events, Event{Kind: "stopping", Reason: reason})
+	a.sink.send(Event{Kind: "stopping", Reason: reason})
 }
 
 func (a stateAdapter) OnStopped(reason string) {
-	trySend(a.events, Event{Kind: "stopped", Reason: reason})
-	close(a.events)
+	a.sink.send(Event{Kind: "stopped", Reason: reason})
+	a.sink.close()
 }
 
-// trySend — не блокировать движок на медленном читателе. Событий немного
-// и они не критичны для протокола (в отличие от TunnelLog у Android,
-// здесь нет ограничения MAX_LINES — переполнение буфера канала просто
-// роняет самые старые/новые сообщения по логике select, а не память).
-func trySend(events chan<- Event, e Event) {
+// eventSink — общий для logger и stateAdapter держатель канала событий с
+// защитой от паники «send on closed channel» (найдено котом 5 на Маке,
+// engine-v1.8.0: OnStopped закрывал канал, а горутины лестницы/growSlots,
+// ещё добирающие слоты, писали в logger после этого — падал весь помощник,
+// не только сессия). mu сериализует send() и close() друг с другом; closed
+// делает send() после close() тихим no-op вместо паники. close() сама
+// защищена от повторного закрытия (ошибка Connect и OnStopped иначе могли
+// бы столкнуться).
+type eventSink struct {
+	mu     sync.Mutex
+	ch     chan Event
+	closed bool
+}
+
+func newEventSink(buf int) *eventSink {
+	return &eventSink{ch: make(chan Event, buf)}
+}
+
+// send — не блокировать движок на медленном читателе. Событий немного и
+// они не критичны для протокола (в отличие от TunnelLog у Android, здесь
+// нет ограничения MAX_LINES — переполнение буфера канала просто роняет
+// самые старые/новые сообщения по логике select, а не память).
+func (s *eventSink) send(e Event) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
 	select {
-	case events <- e:
+	case s.ch <- e:
 	default:
 	}
+}
+
+func (s *eventSink) close() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
+	s.closed = true
+	close(s.ch)
 }
 
 // Start поднимает сессию: проходит лестницу (Connect), затем поднимает
@@ -187,9 +221,9 @@ func trySend(events chan<- Event, e Event) {
 // per-instance — Start второй раз до Stop первой вернёт ошибку "сессия
 // уже поднята" тем же путём, что и у мобильных клиентов.
 func Start(ctx context.Context, cfg Config, tun engine.PacketFlow) (*Handle, <-chan Event, error) {
-	events := make(chan Event, 64)
-	logger := logFunc(func(line string) { trySend(events, Event{Kind: "log", Reason: line}) })
-	listener := stateAdapter{events: events}
+	sink := newEventSink(64)
+	logger := logFunc(func(line string) { sink.send(Event{Kind: "log", Reason: line}) })
+	listener := stateAdapter{sink: sink}
 
 	tunnelDNS := cfg.TunnelDNS
 	if tunnelDNS == nil {
@@ -209,14 +243,14 @@ func Start(ctx context.Context, cfg Config, tun engine.PacketFlow) (*Handle, <-c
 	)
 	if err != nil {
 		cancel()
-		close(events)
-		return nil, events, err
+		sink.close()
+		return nil, sink.ch, err
 	}
 
 	info, err := parseAssigned(assigned)
 	if err != nil {
 		cancel()
-		return nil, events, err
+		return nil, sink.ch, err
 	}
 	info.MTU = engine.MTU()
 
@@ -225,11 +259,11 @@ func Start(ctx context.Context, cfg Config, tun engine.PacketFlow) (*Handle, <-c
 	}
 	if err := engine.StartFlow(tun); err != nil {
 		cancel()
-		return nil, events, err
+		return nil, sink.ch, err
 	}
 
-	trySend(events, Event{Kind: "ready", Reason: fmt.Sprintf("%s/%d gw %s", info.IP, info.PrefixLen, info.Gateway)})
-	return &Handle{cancel: cancel, info: info}, events, nil
+	sink.send(Event{Kind: "ready", Reason: fmt.Sprintf("%s/%d gw %s", info.IP, info.PrefixLen, info.Gateway)})
+	return &Handle{cancel: cancel, info: info}, sink.ch, nil
 }
 
 // parseAssigned разбирает "10.77.77.5/16" от engine.Connect и добавляет шлюз

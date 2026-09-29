@@ -172,3 +172,31 @@ func TestGuardedProtectorNilAndMissingHooks(t *testing.T) {
 		t.Error("без LookupHost у клиента обёртка обязана вернуть ошибку (движок откатится на обычный резолв)")
 	}
 }
+
+// TestEventSinkSendAfterCloseNoPanic — паника «send on closed channel»,
+// найденная котом 5 на Маке (engine-v1.8.0): OnStopped закрывал канал
+// событий напрямую, а горутины лестницы/growSlots, ещё дозаписывающие
+// логи, писали в него после закрытия — падал весь помощник, не только
+// сессия. eventSink.send() после close() должен быть тихим no-op.
+func TestEventSinkSendAfterCloseNoPanic(t *testing.T) {
+	s := newEventSink(4)
+	s.close()
+	s.send(Event{Kind: "log", Reason: "после close — не должно панковать"})
+	s.close() // повторный close тоже не должен падать
+}
+
+// TestEventSinkConcurrentSendDuringClose — то же самое, но под -race:
+// одна горутина непрерывно шлёт события (как growSlots/логгер), другая
+// зовёт close() ровно один раз (как OnStopped) — гонки и паники быть не должно.
+func TestEventSinkConcurrentSendDuringClose(t *testing.T) {
+	s := newEventSink(4)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 1000; i++ {
+			s.send(Event{Kind: "log", Reason: "spam"})
+		}
+	}()
+	s.close()
+	<-done
+}
