@@ -158,9 +158,11 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
+                GlassBackground {
                 Scaffold(
                     modifier = Modifier.fillMaxSize(),
-                    containerColor = Brand.space,
+                    // Прозрачный: под ним стеклянный фон (Glass.kt).
+                    containerColor = androidx.compose.ui.graphics.Color.Transparent,
                 ) { inner ->
                     val pad = Modifier.padding(inner)
                     when (screen) {
@@ -198,7 +200,7 @@ class MainActivity : ComponentActivity() {
                                 // только в establish().
                                 TunnelLog.add("список приложений изменён — переподключаюсь по просьбе")
                                 startService(
-                                    Intent(this, MeridianVpnService::class.java)
+                                    Intent(this@MainActivity, MeridianVpnService::class.java)
                                         .setAction(MeridianVpnService.ACTION_RECONNECT)
                                 )
                             },
@@ -210,9 +212,10 @@ class MainActivity : ComponentActivity() {
                         Screen.LOGS -> LogScreen(
                             modifier = pad,
                             onBack = { screen = Screen.SETTINGS },
-                            onShare = { TunnelLog.add(LogExport.share(this)) },
+                            onShare = { TunnelLog.add(LogExport.share(this@MainActivity)) },
                         )
                     }
+                }
                 }
             }
         }
@@ -397,7 +400,7 @@ fun TunnelScreen(modifier: Modifier = Modifier, onSettings: () -> Unit = {}) {
             modifier = Modifier.fillMaxWidth(),
             contentAlignment = Alignment.Center,
         ) {
-            GearButton(onClick = onSettings)
+            GearButton(size = 48.dp, tint = Brand.text, onClick = onSettings)
         }
     }
 }

@@ -63,6 +63,7 @@ fun SettingsScreen(
         // VPN, потом ещё одно приложение, потом ещё. Обход белых
         // списков — раз в несколько дней, когда кончаются ссылки.
         // Логи — только когда что-то сломалось, то есть почти никогда.
+        Column(modifier = Modifier.fillMaxWidth().padding(top = 8.dp).glassCard().padding(horizontal = 16.dp)) {
         Entry(
             title = "Раздельное туннелирование",
             hint = SplitTunnel.title(SplitTunnel.mode.value).lowercase() +
@@ -85,6 +86,7 @@ fun SettingsScreen(
             icon = { LogIcon() },
             onClick = onLogs,
         )
+        }
 
         // Срок доступа И остаток пробного периода — ЗДЕСЬ, внизу
         // настроек, а не на главном экране (55.3 + просьба владельца):
@@ -166,7 +168,7 @@ private fun Entry(
             Text(hint, color = Brand.dim, fontSize = 13.sp)
         }
     }
-    HorizontalDivider(color = Brand.sphere)
+    HorizontalDivider(color = Glass.cardBorder)
 }
 
 /**
@@ -221,7 +223,8 @@ private fun SupportSend(onFallback: () -> Unit) {
     var note by remember { mutableStateOf("") }
     var offerMail by remember { mutableStateOf(false) }
 
-    Button(
+    GlassButton(
+        text = if (busy) "Отправляю…" else "Отправить в поддержку",
         modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
         enabled = !busy,
         onClick = {
@@ -247,7 +250,7 @@ private fun SupportSend(onFallback: () -> Unit) {
                 }
             }
         },
-    ) { Text(if (busy) "Отправляю…" else "Отправить в поддержку") }
+    )
 
     if (note.isNotEmpty()) {
         Text(note, color = Brand.dim, fontSize = 13.sp, modifier = Modifier.fillMaxWidth())

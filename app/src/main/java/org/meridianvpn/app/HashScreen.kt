@@ -75,33 +75,12 @@ fun HashScreen(modifier: Modifier = Modifier, onBack: () -> Unit) {
         // на всю ширину. Выбранная половина залита акцентом, невыбранная прозрачная.
         Text("Транспорт обхода белых списков", color = Brand.dim, fontSize = 13.sp)
         val primaryDion = HashStore.effectivePrimaryDion()
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(40.dp)
-                .border(1.dp, Brand.edge, RoundedCornerShape(10.dp))
-                .clip(RoundedCornerShape(10.dp)),
-        ) {
-            for ((title, isDion) in listOf("VK" to false, "DION" to true)) {
-                val selected = primaryDion == isDion
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxHeight()
-                        .background(if (selected) Brand.edge else Color.Transparent)
-                        .clickable(enabled = !busy) {
-                            note = HashStore.setPrimaryDion(isDion)
-                        },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        title,
-                        color = if (selected) Color.Black else Brand.dim,
-                        fontSize = 15.sp,
-                    )
-                }
-            }
-        }
+        GlassSegmented(
+            options = listOf("VK", "DION"),
+            selected = if (primaryDion) 1 else 0,
+            modifier = Modifier.fillMaxWidth(),
+            enabled = !busy,
+        ) { i -> note = HashStore.setPrimaryDion(i == 1) }
 
         OutlinedTextField(
             value = input,
@@ -117,7 +96,12 @@ fun HashScreen(modifier: Modifier = Modifier, onBack: () -> Unit) {
         // поле; никакой значок не может означать «добавить или, если
         // добавлять нечего, проверить все» — а цена ошибки высокая:
         // проверка это настоящий расход ссылок.
-        Button(
+        GlassButton(
+            text = when {
+                busy -> "Проверяю…"
+                input.isNotBlank() -> "Добавить"
+                else -> "Проверить все"
+            },
             modifier = Modifier.fillMaxWidth(),
             enabled = !busy && (input.isNotBlank() || HashStore.items.isNotEmpty()),
             onClick = {
@@ -131,16 +115,8 @@ fun HashScreen(modifier: Modifier = Modifier, onBack: () -> Unit) {
                         busy = false
                     }
                 }
-            }
-        ) {
-            Text(
-                when {
-                    busy -> "Проверяю…"
-                    input.isNotBlank() -> "Добавить"
-                    else -> "Проверить все"
-                }
-            )
-        }
+            },
+        )
 
         if (note.isNotEmpty()) {
             Text(note, color = Brand.text, fontSize = 13.sp)
@@ -154,7 +130,9 @@ fun HashScreen(modifier: Modifier = Modifier, onBack: () -> Unit) {
         // (просьба владельца 29.09): в режиме DION комнаты выше ссылок VK.
         val vkItems = HashStore.items.filter { !HashStore.isDion(it.hash) }
         val dionItems = HashStore.items.filter { HashStore.isDion(it.hash) }
-        LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
+        LazyColumn(
+            modifier = Modifier.weight(1f).fillMaxWidth().glassCard().padding(horizontal = 14.dp),
+        ) {
             for (dionSection in (if (primaryDion) listOf(true, false) else listOf(false, true))) {
                 val list = if (dionSection) dionItems else vkItems
                 item(key = if (dionSection) "hdr-dion" else "hdr-vk") {
@@ -190,7 +168,7 @@ private fun HashRow(e: HashStore.Entry) {
         // Крестик без подписи: значок понятен сам по себе.
         DeleteButton(onClick = { HashStore.remove(e.hash) })
     }
-    HorizontalDivider(color = Brand.sphere)
+    HorizontalDivider(color = Glass.cardBorder)
 }
 
 /**

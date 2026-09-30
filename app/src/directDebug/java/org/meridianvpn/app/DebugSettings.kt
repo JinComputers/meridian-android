@@ -62,7 +62,7 @@ fun DebugRows() {
                     fontSize = 12.sp,
                 )
             }
-            Switch(
+            GlassSwitch(
                 checked = relayOnly,
                 onCheckedChange = {
                     TransportSetting.set(

@@ -89,7 +89,8 @@ fun UpdateBanner() {
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Button(
+                GlassAccentButton(
+                    text = if (stage == Update.Stage.READY) "Установить" else "Обновить",
                     modifier = Modifier.weight(1f),
                     onClick = {
                         // Тот же порядок, что по нажатию на строку
@@ -99,17 +100,16 @@ fun UpdateBanner() {
                         if (stage == Update.Stage.READY) Update.install(ctx)
                         else Update.download(ctx)
                     },
-                ) {
-                    Text(if (stage == Update.Stage.READY) "Установить" else "Обновить")
-                }
+                )
                 // «Позже» есть ТОЛЬКО пока не скачано. После скачивания
                 // прятать нечего: файл уже лежит, и не поставить его —
                 // худший из исходов.
                 if (stage == Update.Stage.AVAILABLE) {
-                    TextButton(
+                    GlassButton(
+                        text = "Позже",
                         modifier = Modifier.weight(1f),
                         onClick = { Update.dismissBanner() },
-                    ) { Text("Позже") }
+                    )
                 }
             }
         }

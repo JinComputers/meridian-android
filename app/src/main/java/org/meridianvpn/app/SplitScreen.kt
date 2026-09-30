@@ -20,6 +20,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.border
+import androidx.compose.ui.graphics.Color
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
@@ -153,12 +155,13 @@ fun SplitScreen(
                         Text(r.label, color = Brand.text, fontSize = 15.sp)
                         Text(r.pkg, color = Brand.dim, fontSize = 11.sp)
                     }
-                    Checkbox(
+                    GlassCheck(
                         checked = r.pkg in chosen,
                         onCheckedChange = { SplitTunnel.toggle(r.pkg) },
+                        modifier = Modifier.padding(end = 6.dp),
                     )
                 }
-                HorizontalDivider(color = Brand.sphere)
+                HorizontalDivider(color = Glass.cardBorder)
             }
         }
 
@@ -170,8 +173,9 @@ fun SplitScreen(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(Brand.sphere)
-                .padding(horizontal = 16.dp, vertical = 8.dp),
+                .padding(horizontal = 10.dp, vertical = 6.dp)
+                .glassCard()
+                .padding(horizontal = 14.dp, vertical = 10.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             // Предупреждение о живом туннеле (52.6). Список применяется
@@ -189,7 +193,7 @@ fun SplitScreen(
                         fontSize = 12.sp,
                         modifier = Modifier.weight(1f),
                     )
-                    TextButton(onClick = onReconnect) { Text("Сейчас") }
+                    GlassButton(text = "Сейчас", height = 36.dp, onClick = onReconnect)
                 }
             }
 
@@ -207,9 +211,10 @@ fun SplitScreen(
                 onValueChange = { query = it },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(Brand.space)
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                    .clip(Glass.pillShape)
+                    .background(Color(0x33000000))
+                    .border(1.dp, GlassVolume.cardBorder, Glass.pillShape)
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
                 singleLine = true,
                 textStyle = TextStyle(color = Brand.text, fontSize = 14.sp),
                 cursorBrush = SolidColor(Brand.edge),
@@ -235,27 +240,13 @@ fun SplitScreen(
             // размер цели касания. Снимаем требование и держим высоту
             // сами; целью касания остаётся ВСЯ половина: clickable висит
             // на Row с weight(1f), 40 точек на неё — больше самого кружка.
-            CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides 0.dp) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    for (m in SplitTunnel.Mode.entries) {
-                        Row(
-                            modifier = Modifier
-                                .weight(1f)
-                                .heightIn(min = 40.dp)
-                                .clickable { SplitTunnel.setMode(m) },
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            RadioButton(selected = mode == m, onClick = { SplitTunnel.setMode(m) })
-                            // Пояснений под режимами нет (54.3): названия
-                            // сами говорят, что происходит с выбранными.
-                            Text(SplitTunnel.title(m), color = Brand.text, fontSize = 14.sp)
-                        }
-                    }
-                }
-            }
+            // Режимы — стеклянным сегментным переключателем (эталон — панель).
+            val modes = SplitTunnel.Mode.entries
+            GlassSegmented(
+                options = modes.map { SplitTunnel.title(it) },
+                selected = modes.indexOf(mode),
+                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+            ) { i -> SplitTunnel.setMode(modes[i]) }
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -265,7 +256,7 @@ fun SplitScreen(
                 // ПОДПИСЬ ЗДЕСЬ НУЖНА. Значок не скажет «системные»: это
                 // не действие, а признак отбора, и угадать его по
                 // картинке нельзя. Правило 51.6 про кнопки действия.
-                Switch(checked = withSystem, onCheckedChange = { withSystem = it })
+                GlassSwitch(checked = withSystem, onCheckedChange = { withSystem = it })
                 Text("системные", color = Brand.dim, fontSize = 13.sp)
 
                 Text(
@@ -275,7 +266,7 @@ fun SplitScreen(
                     modifier = Modifier.weight(1f),
                 )
                 if (chosen.isNotEmpty()) {
-                    TextButton(onClick = { SplitTunnel.clear() }) { Text("сбросить") }
+                    GlassButton(text = "сбросить", height = 36.dp) { SplitTunnel.clear() }
                 }
             }
 
@@ -291,11 +282,11 @@ fun SplitScreen(
             //
             // Нужен настоящий черновик с отменой — это отдельная работа,
             // и делать её надо целиком, а не переименованием кнопки.
-            Button(
+            GlassAccentButton(
+                text = "Готово",
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
                 onClick = onBack,
-                modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.buttonColors(containerColor = Brand.edge),
-            ) { Text("Готово") }
+            )
         }
     }
 }

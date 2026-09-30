@@ -18,6 +18,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
@@ -204,8 +205,10 @@ fun Planet(
     }
 
     Canvas(
+        // ХОЛСТ ШИРЕ ВЫСОТЫ: орбита звезды выходит за сферу на 1.44 r по
+        // горизонтали (дизайн H кота 2). Высота прежняя, значит и сфера прежняя.
         modifier = modifier
-            .size(size)
+            .size(width = size * STAR_CANVAS_WIDE, height = size)
             .semantics {
                 contentDescription = "Планета Meridian, кнопка подключения"
                 stateDescription = state
@@ -251,6 +254,33 @@ fun Planet(
 
         // Фаза покоя. 1.274 рад = 73°, см. заголовок.
         val phase = REST_PHASE + t * MERIDIAN_SPEED
+
+        // ЗВЕЗДА НА ОРБИТЕ (дизайн H кота 2, 30.09): дальняя сторона рисуется
+        // ДО сферы — диск её прячет, ближняя — после спутника.
+        val theta = t * STAR_SPEED
+        if (moving) {
+            drawOrbitArc(c, r, near = false)
+            if (sin(theta) < 0f) drawStar(c, r, theta)
+        }
+
+        // МЯГКАЯ КОНТУРНАЯ ПОДСВЕТКА (эталон — панель роутера): свечение цветом
+        // контура, сильнее у самого края и гаснет наружу. Только пока туннель работает.
+        if (connected) {
+            val halo = r * 1.45f
+            drawCircle(
+                brush = Brush.radialGradient(
+                    0f to Color.Transparent,
+                    (r * 0.80f / halo) to Color.Transparent,
+                    (r / halo) to edgeColor.copy(alpha = 0.42f),
+                    (r * 1.12f / halo) to edgeColor.copy(alpha = 0.16f),
+                    1f to Color.Transparent,
+                    center = c,
+                    radius = halo,
+                ),
+                radius = halo,
+                center = c,
+            )
+        }
 
         // --- тело сферы ----------------------------------------------
         drawCircle(sphereColor, r, c)
@@ -342,6 +372,11 @@ fun Planet(
 
             drawCircle(if (whiteNow) Brand.edgeWhite else Brand.edge, dot * 0.85f, sat)
         }
+
+        if (moving) {
+            drawOrbitArc(c, r, near = true)
+            if (sin(theta) >= 0f) drawStar(c, r, theta)
+        }
     }
 }
 
@@ -402,7 +437,8 @@ fun GearButton(
         modifier = modifier
             .size(size)
             .semantics { contentDescription = "Настройки" }
-            .clickable(onClickLabel = "открыть") { onClick() }
+            .glassPress(onClickLabel = "открыть") { onClick() }
+            .glassCircle()
     ) {
         val c = Offset(this.size.width / 2f, this.size.height / 2f)
         val unit = this.size.minDimension
@@ -492,7 +528,9 @@ private const val STROKE_MAX = 0.34f
  */
 @Composable
 fun BackButton(modifier: Modifier = Modifier, onClick: () -> Unit) {
-    IconBtn(modifier = modifier.clickable { onClick() }) { tint, r ->
+    // Отступ до заголовка — здесь, чтобы он был одинаков на всех экранах.
+    androidx.compose.foundation.layout.Row {
+    IconBtn(modifier = modifier.glassPress { onClick() }.glassCircle(), tint = Brand.text) { tint, r ->
         val c = Offset(size.width / 2f, size.height / 2f)
         val w = r * STROKE_MAX
         val cap = StrokeCap.Round
@@ -500,12 +538,14 @@ fun BackButton(modifier: Modifier = Modifier, onClick: () -> Unit) {
         drawLine(tint, Offset(c.x - r, c.y), Offset(c.x - r * 0.1f, c.y - r * 0.7f), strokeWidth = w, cap = cap)
         drawLine(tint, Offset(c.x - r, c.y), Offset(c.x - r * 0.1f, c.y + r * 0.7f), strokeWidth = w, cap = cap)
     }
+    androidx.compose.foundation.layout.Spacer(modifier = Modifier.size(14.dp))
+    }
 }
 
 /** Поделиться: стрелка вверх из основания. */
 @Composable
 fun ShareButton(modifier: Modifier = Modifier, onClick: () -> Unit) {
-    IconBtn(modifier = modifier.clickable { onClick() }) { tint, r ->
+    IconBtn(modifier = modifier.glassPress { onClick() }.glassCircle(), tint = Brand.text) { tint, r ->
         val c = Offset(size.width / 2f, size.height / 2f)
         val w = r * 0.30f
         val cap = StrokeCap.Round
@@ -528,10 +568,15 @@ fun ShareButton(modifier: Modifier = Modifier, onClick: () -> Unit) {
  */
 @Composable
 fun DeleteButton(modifier: Modifier = Modifier, onClick: () -> Unit) {
-    IconBtn(modifier = modifier.clickable { onClick() }) { tint, r0 ->
-        val r = r0 * 0.707f
+    // Как на панели кота 2: маленький стеклянный кружок с мелким белым крестиком.
+    IconBtn(
+        modifier = modifier.glassPress { onClick() }.glassCircle(),
+        size = 32.dp,
+        tint = Brand.text,
+    ) { tint, r0 ->
+        val r = r0 * 0.707f * 0.6f
         val c = Offset(size.width / 2f, size.height / 2f)
-        val w = r * 0.30f
+        val w = r0 * 0.16f
         val cap = StrokeCap.Round
         drawLine(tint, Offset(c.x - r, c.y - r), Offset(c.x + r, c.y + r), strokeWidth = w, cap = cap)
         drawLine(tint, Offset(c.x + r, c.y - r), Offset(c.x - r, c.y + r), strokeWidth = w, cap = cap)
@@ -583,5 +628,88 @@ fun LogIcon(modifier: Modifier = Modifier, tint: Color = Brand.edge) {
             val right = if (i == 1) c.x + r * 0.3f else c.x + r
             drawLine(c1, Offset(c.x - r, y), Offset(right, y), strokeWidth = w, cap = StrokeCap.Round)
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Звезда на орбите (дизайн H кота 2, одинаково во всех клиентах).
+// Все размеры в долях r — радиуса сферы.
+// ---------------------------------------------------------------------------
+
+/** Холст шире высоты во столько раз: орбита 2·1.44 r плюс звезда. */
+private const val STAR_CANVAS_WIDE = 1.45f
+
+/** Полуоси орбиты: горизонтальный эллипс без наклона. */
+private const val ORBIT_RX = 1.44f
+private const val ORBIT_RY = 0.27f
+
+/** Рад/с: оборот около 12 с. */
+private const val STAR_SPEED = 0.52f
+
+/** Концы лучей искры от её центра. */
+private const val STAR_TIP = 0.115f
+
+/** Опорные точки кривых сторон: q = 0.145 s — лучи тонкие и вогнутые. */
+private const val STAR_WAIST = 0.145f
+
+/** Свечение под искрой. */
+private const val STAR_GLOW = 0.167f
+
+/** Дуга орбиты: дальняя (верхняя, 0.10) до сферы, ближняя (нижняя, 0.16) после. */
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawOrbitArc(c: Offset, r: Float, near: Boolean) {
+    val rx = r * ORBIT_RX
+    val ry = r * ORBIT_RY
+    drawArc(
+        color = Color.White.copy(alpha = if (near) 0.16f else 0.10f),
+        // Углы drawArc идут по часовой от +x, ось y вниз: 0..180 — нижняя
+        // (ближняя) половина, 180..360 — верхняя (дальняя).
+        startAngle = if (near) 0f else 180f,
+        sweepAngle = 180f,
+        useCenter = false,
+        topLeft = Offset(c.x - rx, c.y - ry),
+        size = Size(rx * 2f, ry * 2f),
+        style = Stroke(width = r / 96f),
+    )
+}
+
+/**
+ * Искра ✦ в точке θ орбиты. Масштаб и прозрачность дают глубину: на ближней
+ * стороне крупнее и ярче, на дальней мельче и тусклее. Искра ещё и
+ * поворачивается: угол θ·0.6.
+ */
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawStar(c: Offset, r: Float, theta: Float) {
+    val st = sin(theta)
+    val pos = Offset(c.x + r * ORBIT_RX * cos(theta), c.y + r * ORBIT_RY * st)
+    val m = 0.72f + 0.28f * st
+    val alpha = if (st >= 0f) 1f else (0.55f + 0.45f * (1f + st)).coerceIn(0f, 1f)
+
+    val glow = r * STAR_GLOW * m
+    drawCircle(
+        brush = Brush.radialGradient(
+            colors = listOf(Color.White.copy(alpha = 0.55f * alpha), Color.Transparent),
+            center = pos,
+            radius = glow,
+        ),
+        radius = glow,
+        center = pos,
+    )
+
+    val s = r * STAR_TIP
+    val q = s * STAR_WAIST
+    val path = androidx.compose.ui.graphics.Path().apply {
+        moveTo(0f, -s)
+        cubicTo(q, -q, q, -q, s, 0f)
+        cubicTo(q, q, q, q, 0f, s)
+        cubicTo(-q, q, -q, q, -s, 0f)
+        cubicTo(-q, -q, -q, -q, 0f, -s)
+        close()
+    }
+    val deg = theta * 57.2958f * 0.6f
+    withTransform({
+        translate(pos.x, pos.y)
+        rotate(deg, pivot = Offset.Zero)
+        scale(m, m, pivot = Offset.Zero)
+    }) {
+        drawPath(path, Color.White.copy(alpha = alpha))
     }
 }
