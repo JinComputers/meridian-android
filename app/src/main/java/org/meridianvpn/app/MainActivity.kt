@@ -213,6 +213,7 @@ class MainActivity : ComponentActivity() {
                             modifier = pad,
                             onBack = { screen = Screen.SETTINGS },
                             onShare = { TunnelLog.add(LogExport.share(this@MainActivity)) },
+                            onCopy = { LogExport.copy(this@MainActivity) },
                         )
                     }
                 }

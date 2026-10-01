@@ -542,6 +542,19 @@ fun BackButton(modifier: Modifier = Modifier, onClick: () -> Unit) {
     }
 }
 
+/** Копировать: два перекрывающихся листа. */
+@Composable
+fun CopyButton(modifier: Modifier = Modifier, onClick: () -> Unit) {
+    IconBtn(modifier = modifier.glassPress { onClick() }.glassCircle(), tint = Brand.text) { tint, r ->
+        val c = Offset(size.width / 2f, size.height / 2f)
+        val w = r * 0.26f
+        val s = r * 1.15f
+        val corner = androidx.compose.ui.geometry.CornerRadius(r * 0.25f)
+        drawRoundRect(tint, Offset(c.x - r * 0.15f, c.y - r * 0.15f), Size(s, s), corner, style = Stroke(width = w))
+        drawRoundRect(tint, Offset(c.x - r * 0.95f, c.y - r * 0.95f), Size(s, s), corner, style = Stroke(width = w))
+    }
+}
+
 /** Поделиться: стрелка вверх из основания. */
 @Composable
 fun ShareButton(modifier: Modifier = Modifier, onClick: () -> Unit) {

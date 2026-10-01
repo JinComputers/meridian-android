@@ -179,7 +179,9 @@ fun LogScreen(
     modifier: Modifier = Modifier,
     onBack: () -> Unit,
     onShare: () -> Unit,
+    onCopy: () -> String = { "" },
 ) {
+    var copied by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf("") }
     Column(
         modifier = modifier.fillMaxSize().padding(horizontal = 12.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
@@ -195,9 +197,18 @@ fun LogScreen(
                 fontSize = 20.sp,
                 modifier = Modifier.weight(1f),
             )
+            // Копировать в буфер — значок «два листа», поделиться (сохранить
+            // файлом, отправить) — стрелка «наружу». Отправки в поддержку
+            // из приложения больше нет (решение владельца 01.10).
+            CopyButton(onClick = { copied = onCopy() })
+            androidx.compose.foundation.layout.Spacer(modifier = Modifier.padding(horizontal = 4.dp))
             // Значок без подписи: стрелка «наружу» — общепринятое
             // «поделиться», объяснять её нечем.
             ShareButton(onClick = onShare)
+        }
+
+        if (copied.isNotEmpty()) {
+            Text(copied, color = Brand.dim, fontSize = 13.sp)
         }
 
         LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
@@ -205,57 +216,6 @@ fun LogScreen(
                 Text(text = line, color = Brand.text, fontSize = 12.sp)
             }
         }
-
-        SupportSend(onFallback = onShare)
     }
 }
 
-/**
- * «Отправить в поддержку» — в одно нажатие, по HTTPS (решение владельца
- * 25.09). Не вышло — сразу предлагаем письмо: «Поделиться» с уже
- * подставленным адресом support@meridianvpn.org (LogExport.share).
- */
-@Composable
-private fun SupportSend(onFallback: () -> Unit) {
-    val ctx = LocalContext.current
-    val scope = rememberCoroutineScope()
-    var busy by remember { mutableStateOf(false) }
-    var note by remember { mutableStateOf("") }
-    var offerMail by remember { mutableStateOf(false) }
-
-    GlassButton(
-        text = if (busy) "Отправляю…" else "Отправить в поддержку",
-        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-        enabled = !busy,
-        onClick = {
-            busy = true
-            note = "отправляю…"
-            offerMail = false
-            scope.launch {
-                val r = withContext(Dispatchers.IO) { LogExport.sendToSupport(ctx) }
-                busy = false
-                when (r) {
-                    is ApiClient.LogResult.Ticket -> {
-                        note = "Лог отправлен, номер обращения ${r.ticket} — назовите его поддержке"
-                    }
-                    is ApiClient.LogResult.TooOften -> {
-                        note = "Лог уже отправляли недавно — попробуйте через ${(r.retryAfter + 59) / 60} мин " +
-                            "или отправьте письмом"
-                        offerMail = true
-                    }
-                    is ApiClient.LogResult.Failed -> {
-                        note = "Отправить не вышло (${r.why}) — отправьте письмом на $SUPPORT_EMAIL"
-                        offerMail = true
-                    }
-                }
-            }
-        },
-    )
-
-    if (note.isNotEmpty()) {
-        Text(note, color = Brand.dim, fontSize = 13.sp, modifier = Modifier.fillMaxWidth())
-    }
-    if (offerMail) {
-        TextButton(onClick = { offerMail = false; onFallback() }) { Text("Отправить письмом") }
-    }
-}
