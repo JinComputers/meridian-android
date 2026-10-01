@@ -380,6 +380,10 @@ object ApiClient {
             conn.readTimeout = READ_MS
             conn.useCaches = false
             conn.setRequestProperty("Accept", "application/json")
+            // Версия и платформа заголовками (просьба кота 1, 01.10): формат версии
+            // тот же, что у /v1/logs.
+            conn.setRequestProperty("X-Meridian-Platform", "android")
+            conn.setRequestProperty("X-Meridian-Version", appVersion(appCtx ?: return Result.Unavailable("нет контекста")))
 
             // ТОКЕНА ЗДЕСЬ НЕТ И НЕ БУДЕТ. Наружные ручки его не
             // проверяют, и это решение кота 2, а не упущение: секрет,

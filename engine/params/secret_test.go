@@ -2,6 +2,7 @@ package params
 
 import (
 	"context"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -24,5 +25,26 @@ func TestFailureTextHasNoKey(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), secret) {
 		t.Fatalf("ключ попал в текст ошибки: %v", err)
+	}
+}
+
+// Версия и платформа из конверта уходят заголовками (просьба кота 1, 01.10).
+func TestVersionHeadersSent(t *testing.T) {
+	var gotV, gotP string
+	s := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotV, gotP = r.Header.Get("X-Meridian-Version"), r.Header.Get("X-Meridian-Platform")
+		apiHandler(liveAnonymous).ServeHTTP(w, r)
+	}))
+	defer s.Close()
+	c := New(Config{
+		Addresses: []Address{addrOf(t, s, true)},
+		Pins:      []string{SPKIPin(s.Certificate())},
+		Envelope:  map[string]string{"app_version": "9.9.9", "platform": "windows"},
+	})
+	if _, err := c.Fetch(context.Background(), ""); err != nil {
+		t.Fatal(err)
+	}
+	if gotV != "9.9.9" || gotP != "windows" {
+		t.Fatalf("заголовки: version=%q platform=%q", gotV, gotP)
 	}
 }

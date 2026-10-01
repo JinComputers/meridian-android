@@ -131,6 +131,22 @@ object Params {
     // Два повода спросить
     // ------------------------------------------------------------------
 
+    /**
+     * Ключ сменился: сохранённый ответ помечаем просроченным и спрашиваем заново
+     * В ФОНЕ. Стирать его нельзя (правило 2) — он остаётся запасным.
+     */
+    fun keyChanged() {
+        val ctx = appCtx ?: return
+        prefs(ctx).edit().putLong(K_GOT_AT, 0L).putLong(K_ASKED_AT, 0L).apply()
+        kotlin.concurrent.thread(name = "meridian-params-key") {
+            try {
+                fetch("смена ключа")
+            } catch (e: Throwable) {
+                TunnelLog.add("параметры: запрос после смены ключа сорвался (${e.message})")
+            }
+        }
+    }
+
     /** Повод 1: вышел срок. */
     fun refreshIfDue() {
         if (!timeToRefresh()) return

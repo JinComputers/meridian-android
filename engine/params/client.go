@@ -317,6 +317,13 @@ func (c *Client) one(ctx context.Context, a Address, path string, params map[str
 		return Unavailable{Why: scrubErr(err)}
 	}
 	req.Header.Set("Accept", "application/json")
+	// Версия и платформа заголовками (просьба кота 1, 01.10): значения из конверта.
+	if v := params["app_version"]; v != "" {
+		req.Header.Set("X-Meridian-Version", v)
+	}
+	if p := params["platform"]; p != "" {
+		req.Header.Set("X-Meridian-Platform", p)
+	}
 
 	resp, err := c.httpClient(a).Do(req)
 	if err != nil {

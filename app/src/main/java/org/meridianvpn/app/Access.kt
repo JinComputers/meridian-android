@@ -467,6 +467,7 @@ object Access {
     ) {
         val ctx = appCtx ?: return
         if (k.isEmpty()) return
+        val changed = key != k
         pending = ""
         key = k
         keyChecked = false
@@ -482,6 +483,11 @@ object Access {
             // другим» к нему не относится ни при каких условиях.
             ?.remove(K_KEY_BOUND_OTHER)
             ?.apply()
+        // СМЕНА КЛЮЧА — СПИСОК УЗЛОВ ОТ ПРЕЖНЕГО КЛЮЧА УСТАРЕЛ (кот 1, 01.10: новому
+        // ключу служба отдаёт свой набор входов). Старый ответ остаётся запасным
+        // (правило 2: не откатываем к зашитым), но помечается просроченным и
+        // запрашивается заново с новым ключом сразу, в фоне.
+        if (changed) Params.keyChanged()
         // Как и при перепроверке: отметка свежести ставится на возраст
         // данных, а не на «сейчас».
         keyCheckedAt = System.currentTimeMillis() - staleAge * 1000L
