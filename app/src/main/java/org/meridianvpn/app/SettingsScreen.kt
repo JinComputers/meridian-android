@@ -1,6 +1,7 @@
 package org.meridianvpn.app
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -49,7 +50,11 @@ fun SettingsScreen(
     onConnect: () -> Unit = {},
 ) {
     Column(
-        modifier = modifier.fillMaxSize().padding(16.dp),
+        // ПРОКРУТКА (03.10): отладочные строки вытеснили строку версии за
+        // нижний край, и обновиться было нечем.
+        modifier = modifier.fillMaxSize()
+            .verticalScroll(androidx.compose.foundation.rememberScrollState())
+            .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -92,7 +97,7 @@ fun SettingsScreen(
         // настроек, а не на главном экране (55.3 + просьба владельца):
         // смотрят на них изредка, а место на главном они занимали
         // всегда. Планета сама показывает, что доступ есть.
-        Spacer(modifier = Modifier.weight(1f))
+        Spacer(modifier = Modifier.padding(top = 24.dp))
         // Пробный период называем пробным, даже когда он пришёл серверным
         // ключом с датой (тогда state=KEYED): иначе рядом с «Доступ до …»
         // появляется «Купить», и непонятно, почему предлагают купить уже

@@ -76,7 +76,7 @@ fun DebugRows() {
         // ОДНА СТУПЕНЬ ВМЕСТО ЛЕСТНИЦЫ — для проверки входов с котом 1 (03.10).
         // Без релея. Живёт до перезапуска приложения.
         var only by remember { mutableStateOf(onlyNodeId) }
-        for (id in listOf("m3")) {
+        for (id in listOf("s3", "n3", "s1", "n1")) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
