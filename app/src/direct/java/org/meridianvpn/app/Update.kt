@@ -88,6 +88,18 @@ object Update {
     private const val CONNECT_MS = 8000
     private const val READ_MS = 15000
 
+    // ПРОВЕРКА ВЕРСИИ — КОРОТКО (жалоба владельца 03.10: до двух минут и
+    // «read timed out»). Три запроса подряд по 8+15 с складывались в
+    // минуты на медленной мобильной сети. Теперь срок на каждый шаг
+    // короче, а вся проверка ограничена общим сроком. Скачивание сборки
+    // этих сроков не касается — там прежние CONNECT_MS/READ_MS.
+    private const val CHECK_CONNECT_MS = 5000
+    private const val CHECK_READ_MS = 8000
+    private const val CHECK_TOTAL_MS = 20_000L
+
+    /** Сеть, через которую идут запросы проверки; null — сеть по умолчанию. */
+    @Volatile private var checkNet: android.net.Network? = null
+
     /** Тихая проверка — не чаще раза в сутки. */
     private const val QUIET_INTERVAL_MS = 24L * 60L * 60L * 1000L
 
@@ -351,7 +363,7 @@ object Update {
         thread(name = "meridian-update") {
             try {
                 sweep(app)
-                val info = fetchManifest()
+                val info = fetchManifestFast(app)
                 val installed = installedCode(app)
                 ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
                     .putLong(K_LAST_CHECK, System.currentTimeMillis()).apply()
@@ -411,6 +423,85 @@ object Update {
      * настоящей сети. Значит GitHub видит настоящий адрес человека даже
      * при поднятом туннеле — свойство известное, записано в проекте.
      */
+    /**
+     * Проверка с общим сроком и сначала ЧЕРЕЗ ТУННЕЛЬ.
+     *
+     * Само приложение выведено из туннеля, и запрос шёл по голой
+     * мобильной сети, где GitHub бывает очень медленным. Если VPN поднят,
+     * пробуем его сеть явно (Network.openConnection); не вышло — та же
+     * проверка по обычной сети. Через туннель GitHub видит адрес шлюза.
+     */
+    private fun fetchManifestFast(ctx: Context): Info {
+        // Через туннель не ходим: приложение исключено из VPN, и Android
+        // отказывает в привязке к его сети (EPERM, лог 03.10 16:28:24).
+        // СНАЧАЛА ЗЕРКАЛО НА НАШЕМ API (03.10): GitHub на мобильной сети
+        // бывает недоступен совсем. Описание то же, байт в байт; сумму и
+        // размер сборки проверяем сами, так что зеркалу верить не нужно.
+        // Отладочная сборка зеркалом не пользуется (там закрытый
+        // репозиторий), но щупает его — чтобы по логу было видно, доходит ли.
+        val m = mirrorManifest()
+        if (m != null && !updatePrivate()) {
+            TunnelLog.add("обновление: проверено через зеркало, версия ${m.name}")
+            return m
+        }
+        val t0 = System.currentTimeMillis()
+        val info = withDeadline(CHECK_TOTAL_MS, null)
+        TunnelLog.add("обновление: проверено напрямую за ${System.currentTimeMillis() - t0} мс")
+        return info
+    }
+
+    private const val MIRROR_PATH = "/v1/update/android/"
+    private const val MIRROR_TOTAL_MS = 10_000L
+
+    /** Описание с зеркала; null — зеркало молчит или ответило негодным. */
+    private fun mirrorManifest(): Info? {
+        var res: Info? = null
+        val t0 = System.currentTimeMillis()
+        val t = thread(name = "meridian-update-mirror") {
+            try {
+                val c = ApiClient.openMirror(MIRROR_PATH + "latest.json", "application/json",
+                    CHECK_CONNECT_MS, CHECK_READ_MS) ?: return@thread
+                val body = try {
+                    c.inputStream.use { it.readBytes(64 * 1024) }.toString(Charsets.UTF_8)
+                } finally {
+                    c.disconnect()
+                }
+                res = parseManifest(body, PUBLIC_REPO)
+            } catch (e: Throwable) {
+                TunnelLog.add("зеркало: описание негодно (${e.message})")
+            }
+        }
+        t.join(MIRROR_TOTAL_MS)
+        if (t.isAlive) {
+            t.interrupt()
+            TunnelLog.add("зеркало: не ответило за ${MIRROR_TOTAL_MS / 1000} с")
+            return null
+        }
+        res?.let {
+            TunnelLog.add("зеркало: версия ${it.name} (${it.code}) за ${System.currentTimeMillis() - t0} мс")
+        }
+        return res
+    }
+
+    /** Открытый релизный репозиторий — его и только его отдаёт зеркало. */
+    private const val PUBLIC_REPO = "JinComputers/meridian-android"
+
+    private fun withDeadline(ms: Long, net: android.net.Network?): Info {
+        var res: Info? = null
+        var err: Throwable? = null
+        val t = thread(name = "meridian-update-check") {
+            checkNet = net
+            try { res = fetchManifest() } catch (e: Throwable) { err = e }
+        }
+        t.join(ms)
+        if (t.isAlive) {
+            t.interrupt()
+            throw IllegalStateException("GitHub не ответил за ${ms / 1000} с")
+        }
+        err?.let { throw it }
+        return res ?: throw IllegalStateException("пустой ответ")
+    }
+
     private fun fetchManifest(): Info {
         val body = if (updatePrivate()) {
             if (token() == null) {
@@ -425,6 +516,10 @@ object Update {
         } else {
             get(manifestUrl(), 64 * 1024, "application/json")
         }.toString(Charsets.UTF_8)
+        return parseManifest(body, repo())
+    }
+
+    private fun parseManifest(body: String, repo: String): Info {
         val j = JSONObject(body)
         val info = Info(
             code = j.getLong("version_code"),
@@ -437,7 +532,7 @@ object Update {
         // лежит там же, где сборка, и подменивший одно подменит другое,
         // но перенаправить скачивание на чужой сервер — самый дешёвый
         // способ, и закрыть его стоит одной строкой.
-        if (!info.url.startsWith("https://github.com/${repo()}/releases/download/")) {
+        if (!info.url.startsWith("https://github.com/$repo/releases/download/")) {
             throw IllegalStateException("адрес сборки ведёт не в наш репозиторий")
         }
         if (info.sha256.length != 64) throw IllegalStateException("длина sha256 не та")
@@ -485,13 +580,18 @@ object Update {
      * Поэтому: сами читаем Location, сами открываем следующий адрес и
      * токен дальше НЕ несём.
      */
+    private fun isCheckThread(): Boolean =
+        Thread.currentThread().name == "meridian-update-check"
+
     private fun open(url: String, accept: String, auth: Boolean): HttpURLConnection {
         var current = url
         var carry = auth
         repeat(5) {
-            val c = URL(current).openConnection() as HttpURLConnection
-            c.connectTimeout = CONNECT_MS
-            c.readTimeout = READ_MS
+            val net = if (isCheckThread()) checkNet else null
+            val c = (if (net != null) net.openConnection(URL(current)) else URL(current).openConnection())
+                as HttpURLConnection
+            c.connectTimeout = if (isCheckThread()) CHECK_CONNECT_MS else CONNECT_MS
+            c.readTimeout = if (isCheckThread()) CHECK_READ_MS else READ_MS
             c.instanceFollowRedirects = false
             c.setRequestProperty("Accept", accept)
             // API GitHub отвечает отказом на запрос без имени клиента.
@@ -642,7 +742,13 @@ object Update {
         part.delete()
         // Закрытый репозиторий отдаёт вложение только по идентификатору
         // и только с токеном; открытый — прямым адресом из описания.
-        val c = if (updatePrivate()) {
+        val mirror = if (updatePrivate()) null else
+            ApiClient.openMirror(MIRROR_PATH + info.url.substringAfterLast('/'),
+                "application/octet-stream", CONNECT_MS, READ_MS)
+        if (mirror != null) TunnelLog.add("обновление: качаю с зеркала")
+        val c = if (mirror != null) {
+            mirror
+        } else if (updatePrivate()) {
             val name = info.url.substringAfterLast('/')
             open(apiAssetUrl(assetId(name)), "application/octet-stream", auth = true)
         } else {

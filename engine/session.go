@@ -2242,7 +2242,10 @@ func (s *session) noteStun(raw []byte) {
 // TURN-аллокация, это минуты и чужая инфраструктура. Вопрос же стоит
 // про прямой путь.
 func (s *session) probeAuthNow(c candidate) {
-	if !s.deepProbe || c.isRelay || c.name == "" {
+	// ВЫКЛЮЧЕН 03.10 (решение владельца): кот 1 показал, что этот AUTH
+	// вытесняет на шлюзе живое соединение того же устройства, а ответ,
+	// ради которого он был нужен, получен — путь жив, режется поток.
+	if true || !s.deepProbe || c.isRelay || c.name == "" {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), probeAuthBudget)

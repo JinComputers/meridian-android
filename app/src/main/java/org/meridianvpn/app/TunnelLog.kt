@@ -40,6 +40,17 @@ object TunnelLog {
     private const val MAX_LINES = 200
 
     /**
+     * НАЧАЛО ПОСЛЕДНЕЙ ПОПЫТКИ — отдельно от общего кольца (03.10).
+     * Рост 48 слотов вытесняет 200 строк за секунды, и решение лестницы
+     * (почему прямой, почему релей) из лога пропадало целиком. Держим
+     * строки от разделителя «подключение» до «подключено» (не больше
+     * HEAD_MAX), выгрузка ставит их первыми, если они вытеснены.
+     */
+    private const val HEAD_MAX = 150
+    val head = ArrayList<String>()
+    private var headOpen = false
+
+    /**
      * Сколько строк вытеснено потолком за этот запуск.
      *
      * ЗАЧЕМ СЧИТАТЬ ТО, ЧЕГО УЖЕ НЕТ. 27.08 я разобрал лог владельца и
@@ -188,6 +199,10 @@ object TunnelLog {
             Log.i(TAG, if (text.length <= LOGCAT_MAX) text else text.take(LOGCAT_MAX) + "…")
         }
         main.post {
+            if (headOpen) {
+                head.add(text)
+                if (head.size >= HEAD_MAX || line.startsWith("подключено")) headOpen = false
+            }
             lines.add(text)
             while (lines.size > MAX_LINES) {
                 lines.removeAt(0)
@@ -210,6 +225,9 @@ object TunnelLog {
         if (BuildConfig.DEBUG) Log.i(TAG, "──────── $title ────────")
         main.post {
             val text = "──────── $title ────────"
+            if (title == "подключение") {
+                head.clear(); head.add(text); headOpen = true
+            }
             lines.add(text)
             while (lines.size > MAX_LINES) {
                 lines.removeAt(0)

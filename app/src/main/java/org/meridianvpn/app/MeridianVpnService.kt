@@ -531,6 +531,9 @@ class MeridianVpnService : VpnService() {
     @Volatile
     private var rememberedFor: String? = null
 
+    /** Вход (адрес узла) прямой UDP-ступени, на которой поднялись. */
+    private var directHost: String? = null
+
     /** Причина, с которой движок погасил последнюю сессию. */
     @Volatile
     private var lastStopReason: String? = null
@@ -1058,9 +1061,21 @@ class MeridianVpnService : VpnService() {
                 if (skipSlow) {
                     TunnelLog.event("прямые пути на этой сети медленные — иду на запасной путь")
                 }
-                val skipDirectRace = relayReady &&
-                    PathMemory.skipDirect(this, netKey, skipAfter, probeEvery)
-                val skipDirectMute = relayReady &&
+                // ПРОПУСК ПО СЧЁТЧИКУ ПРОИГРЫШЕЙ ВЫКЛЮЧЕН (владелец 03.10): на
+                // одной сети прямой то держится, то нет (разные пути у входов,
+                // сменился адрес снаружи), а счётчик копил проигрыши и уводил
+                // на релей три подключения из четырёх, хотя прямой был жив.
+                // Теперь прямой пробуется на каждом подключении; цена на
+                // закрытой сети — секунды гонки перед релеем.
+                val skipDirectRace = false
+                // НЕМОТА — ПО ВХОДУ, А НЕ ПО ВСЕМУ ПРЯМОМУ (03.10). Кот 1 по
+                // захвату: ступень через пересыльщика в Алматы глохнет после
+                // первых пакетов, а через другой вход прямой на той же сети
+                // держится. Онемевший вход обходим (avoidHosts ниже); мимо
+                // прямого целиком — только когда онемели все входы.
+                val allDirectHosts = Params.nodes().map { it.host }.toSet()
+                val muteHosts = PathMemory.slowHosts(this, netKey)
+                val skipDirectMute = relayReady && muteHosts.containsAll(allDirectHosts) &&
                     PathMemory.skipDirectMute(this, netKey, DIRECT_MUTE_SKIP_AFTER, probeEvery)
                 val skipDirect = skipDirectRace || skipDirectMute || skipSlow
                 if (skipDirectMute) {
@@ -1114,10 +1129,11 @@ class MeridianVpnService : VpnService() {
 
                 // Входы, на которых замер показал низкую скорость: обходим их,
                 // пока есть другие (speedGuard, PathMemory.avoidHostsNow).
-                val avoidHosts = emptySet<String>() // замер скорости выключен 27.09
-                if (avoidHosts.isNotEmpty() && !skipDirect) {
-                    TunnelLog.event("вход на этой сети медленный — пробую другой вход")
+                val avoidHosts = PathMemory.avoidHostsNow(this, netKey, probeEvery)
+                if (avoidHosts.isNotEmpty()) {
+                    TunnelLog.add("обхожу онемевшие входы: ${avoidHosts.size} из ${allDirectHosts.size}")
                 }
+
 
                 val ladder = buildLadder(knownId, skipDirect, secondRoundMs, skipStreams, avoidHosts)
                 TunnelLog.add(
@@ -1290,6 +1306,7 @@ class MeridianVpnService : VpnService() {
                     // поймал, и дальше снова идём прямым.
                     PathMemory.clearRelayStreak(this, netKey)
                     rememberedFor = netKey
+                    directHost = nodeIds[winner]?.let { id -> Params.nodes().firstOrNull { it.id == id }?.host }
                     TunnelLog.add("запомнил для этой сети: $winner")
                 }
 
@@ -1751,6 +1768,11 @@ class MeridianVpnService : VpnService() {
         PathMemory.noteDirectMute(this, key)
         val n = PathMemory.directMuteStreak(this, key)
         TunnelLog.add("прямой UDP онемел — засчитано ($n) для этой сети")
+        directHost?.let {
+            PathMemory.addSlowHost(this, key, it)
+            TunnelLog.add("вход этой ступени онемел — в следующий раз обхожу его")
+        }
+        directHost = null
         TunnelLog.event("путь онемел — выбираю заново")
     }
 
@@ -2367,7 +2389,18 @@ class MeridianVpnService : VpnService() {
         // Медленные входы обходим, но лестницу пустой не оставляем: если
         // других нет, идём как обычно.
         val withoutSlow = byKind.filter { it.host !in avoidHosts }
-        val directs: List<Node> = if (avoidHosts.isEmpty() || withoutSlow.isEmpty()) byKind else withoutSlow
+        val only = onlyNode()
+        val directs: List<Node> = when {
+            only != null -> (all.filter { it.id == only }.ifEmpty {
+                manualNode(only)?.split(':')?.let { p ->
+                    listOf(Node(only, p[0], p[1].toInt(), p[2] == "1"))
+                } ?: emptyList()
+            }).also {
+                TunnelLog.add("ОТЛАДКА: только ступень $only (${it.size}), без релея")
+            }
+            avoidHosts.isEmpty() || withoutSlow.isEmpty() -> byKind
+            else -> withoutSlow
+        }
 
         // ПОРЯДОК — ПОДСКАЗКА, А НЕ РАСПИСАНИЕ, и список остаётся
         // ПОЛНЫМ. Узлы поднимаются параллельно, победитель — первый
@@ -2446,7 +2479,7 @@ class MeridianVpnService : VpnService() {
 
         // Релей отключается только прямым словом службы: ответ без
         // поля relay не должен отнимать запасной путь.
-        if (mode != Config.TransportMode.DIRECT_ONLY && Params.relayEnabled()) {
+        if (mode != Config.TransportMode.DIRECT_ONLY && only == null && Params.relayEnabled()) {
             ladder.addRelay(
                 Paths.RELAY,
                 Config.TURN_ADDR_BACKUP, Config.TURN_REALM,

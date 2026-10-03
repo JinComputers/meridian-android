@@ -73,7 +73,15 @@ object LogExport {
         } else {
             ""
         }
-        var body = head + TunnelLog.lines.joinToString("\n")
+        // Начало последней попытки, если кольцо его уже вытеснило.
+        // Только то, чего в кольце уже нет, — без повтора строк.
+        val ring = TunnelLog.lines.toHashSet()
+        val first = TunnelLog.head.filter { it !in ring }
+        val pinned = if (first.isNotEmpty() && !TunnelLog.lines.contains(first.getOrElse(1) { first[0] })) {
+            "──────── начало последней попытки ────────\n" + first.joinToString("\n") +
+                "\n──────── дальше — последние строки ────────\n"
+        } else ""
+        var body = head + pinned + TunnelLog.lines.joinToString("\n")
         for (h in HashStore.all()) {
             if (h.length > 8) {
                 body = body.replace(h, h.take(4) + "…" + h.takeLast(4))

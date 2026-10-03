@@ -73,6 +73,34 @@ fun DebugRows() {
             )
         }
 
+        // ОДНА СТУПЕНЬ ВМЕСТО ЛЕСТНИЦЫ — для проверки входов с котом 1 (03.10).
+        // Без релея. Живёт до перезапуска приложения.
+        var only by remember { mutableStateOf(onlyNodeId) }
+        for (id in listOf("m3")) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Только ступень $id", color = Brand.text, fontSize = 16.sp)
+                    Text(
+                        "проверка входа, без релея; сбросится при перезапуске",
+                        color = Brand.dim,
+                        fontSize = 12.sp,
+                    )
+                }
+                GlassSwitch(
+                    checked = only == id,
+                    onCheckedChange = {
+                        only = if (it) id else null
+                        onlyNodeId = only
+                        // Свежий список узлов: j1–j5 пришли в /v1/params 03.10.
+                        if (it) Params.keyChanged()
+                    },
+                )
+            }
+        }
+
         // ПОЛЕ ПРОПАДАЕТ, КОГДА ТОКЕН СОХРАНЁН.
         //
         // Раньше оно оставалось на экране, и это сбивало: непонятно,

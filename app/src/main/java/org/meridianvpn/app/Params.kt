@@ -351,14 +351,20 @@ object Params {
     private const val SECOND_ROUND_MS_DEFAULT = 3000
     private const val SKIP_AFTER_DEFAULT = 5
     private const val PROBE_EVERY_DEFAULT = 4
+    private const val SECOND_ROUND_MS_FLOOR = 5000
+    private const val SKIP_AFTER_FLOOR = 5
 
     /** Срок гонки на втором круге, мс. Для движка (ladder.setSecondRoundMs). */
+    // ЛЕСТНИЦА ПРЯМОГО ДЛИННЕЕ (просьба владельца 03.10): часто уходило на
+    // релей, хотя прямой был доступен и находился простым перезапуском.
+    // Сервер присылает второй круг 3 с и пропуск после 2 — берём не меньше
+    // своих нижних границ, больше — как прислал сервер.
     fun secondRoundMs(): Int =
-        ladderInt("second_round_ms", SECOND_ROUND_MS_DEFAULT, 500, 15000)
+        maxOf(ladderInt("second_round_ms", SECOND_ROUND_MS_DEFAULT, 500, 15000), SECOND_ROUND_MS_FLOOR)
 
     /** После скольких проигрышей релею подряд идём сразу на релей. */
     fun directSkipAfterFails(): Int =
-        ladderInt("direct_skip_after_fails", SKIP_AFTER_DEFAULT, 1, 1000)
+        maxOf(ladderInt("direct_skip_after_fails", SKIP_AFTER_DEFAULT, 1, 1000), SKIP_AFTER_FLOOR)
 
     /** Как часто на «плохой» сети всё же щупаем прямой путь. */
     fun directProbeEveryAttempts(): Int =

@@ -58,3 +58,7 @@ fun updateRepo(): String = "JinComputers/meridian-android"
  * означал бы, что в ней токен есть, — а его там нет и быть не должно.
  */
 fun updatePrivate(): Boolean = false
+
+fun onlyNode(): String? = null
+
+fun manualNode(id: String): String? = null

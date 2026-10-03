@@ -319,6 +319,52 @@ object ApiClient {
         return LogResult.Failed("сервер недоступен ($lastWhy)")
     }
 
+    /**
+     * Зеркало обновлений (/v1/update/android/…, договор с котом 1 от 03.10).
+     *
+     * Те же адреса, пин и сеть мимо туннеля, что у call(), но ответ —
+     * открытое соединение: APK качается потоком с подсчётом хеша. Первый
+     * адрес, ответивший 200, и есть ответ; остальные коды — следующий адрес.
+     * null — не ответил никто. ЗВАТЬ ТОЛЬКО С ФОНОВОГО ПОТОКА.
+     */
+    fun openMirror(path: String, accept: String, connectMs: Int, readMs: Int): HttpsURLConnection? {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            throw IllegalStateException("ApiClient.openMirror с главного потока")
+        }
+        for (addr in ordered()) {
+            val t0 = System.currentTimeMillis()
+            var conn: HttpsURLConnection? = null
+            try {
+                val url = URL("https://${addr.host}:${addr.port}$path")
+                val net = underlying()
+                conn = (net?.openConnection(url) ?: url.openConnection()) as HttpsURLConnection
+                if (addr.pinned) {
+                    conn.sslSocketFactory = pinnedFactory()
+                    conn.hostnameVerifier = pinnedVerifier(addr.host)
+                }
+                conn.connectTimeout = connectMs
+                conn.readTimeout = readMs
+                conn.useCaches = false
+                conn.setRequestProperty("Accept", accept)
+                val code = conn.responseCode
+                if (code == 200) {
+                    TunnelLog.add("зеркало: ${addr.host} ответил за ${System.currentTimeMillis() - t0} мс")
+                    rememberGood(addr.host)
+                    return conn
+                }
+                TunnelLog.add("зеркало: ${addr.host} ответил $code")
+                conn.disconnect()
+            } catch (e: Throwable) {
+                TunnelLog.add(
+                    "зеркало: ${addr.host} не дозвонился за ${System.currentTimeMillis() - t0} мс " +
+                        "(${scrubKey(e.message ?: e.javaClass.simpleName)})"
+                )
+                try { conn?.disconnect() } catch (x: Throwable) { }
+            }
+        }
+        return null
+    }
+
     /** Один заход к одному адресу. */
     private fun one(
         addr: Address,
