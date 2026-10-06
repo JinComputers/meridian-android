@@ -154,6 +154,10 @@ object HashStore {
 
         items.addAll(fresh.map { Entry(it) })
         write()
+        // ЕСТЬ КОМНАТА DION — ОНА И ОСНОВНОЙ ОБХОД (владелец 06.10): клиент
+        // добавил комнату, а подключение шло через VK. Переключить назад на
+        // VK можно тем же переключателем на экране.
+        if (fresh.any { isDion(it) } && !primaryDion.value) setPrimaryDion(true)
         return if (fresh.size == parsed.size) "добавлено: ${fresh.size}"
         else "добавлено ${fresh.size}, пропущено дублей ${parsed.size - fresh.size}"
     }
@@ -250,9 +254,16 @@ object HashStore {
         // Хранится с префиксом dion:, чтобы отличаться от хеша VK в общем пуле.
         run {
             val low = s.lowercase()
+            // Код комнаты вида abc-def-ghi: так DION печатает его в ссылке и
+            // в приглашении. Клиент 06.10 не смог добавить комнату — ссылка
+            // была не того вида, что «dion.vc/event/». Теперь берём код из
+            // любой ссылки на dion и принимаем голый код.
+            val code = Regex("(?i)(?<![A-Za-z0-9])([a-z]{3}-[a-z]{3}-[a-z]{3})(?![A-Za-z0-9])")
             val slug = when {
                 low.startsWith("dion:") -> s.substring(5)
                 low.contains("dion.vc/event/") -> s.substring(low.indexOf("dion.vc/event/") + 14)
+                low.contains("dion") -> code.find(s)?.groupValues?.get(1)
+                Regex("(?i)^[a-z]{3}-[a-z]{3}-[a-z]{3}$").matches(s) -> s
                 else -> null
             }
             if (slug != null) {
