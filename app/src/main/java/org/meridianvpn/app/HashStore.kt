@@ -135,9 +135,16 @@ object HashStore {
      *
      * Принимает и полную ссылку, и голый хеш, и несколько сразу.
      */
-    fun add(input: String): String {
-        val parsed = parseMany(input)
-        if (parsed.isEmpty()) return "не разобрал ни одного хеша"
+    fun add(input: String, asDion: Boolean = false): String {
+        // НА ВКЛАДКЕ DION — ЛЮБАЯ ССЫЛКА СЧИТАЕТСЯ КОМНАТОЙ (владелец 06.10:
+        // «комнату по кнопке не добавляет»). Код берём из последнего куска
+        // пути ссылки; формат ссылок DION бывает разный, гадать по нему не
+        // нужно — человек сам сказал вкладкой, что это DION.
+        val parsed = if (asDion) parseDion(input) else parseMany(input)
+        if (parsed.isEmpty()) {
+            return if (asDion) "не нашёл код комнаты в ссылке — вставьте ссылку-приглашение DION целиком"
+            else "не разобрал ни одного хеша"
+        }
 
         val known = items.map { it.hash }.toHashSet()
         var dionCount = items.count { isDion(it.hash) }
@@ -162,6 +169,21 @@ object HashStore {
         else "добавлено ${fresh.size}, пропущено дублей ${parsed.size - fresh.size}"
     }
 
+    /** Комнаты DION из строки: и ссылки любого вида, и голые коды. */
+    fun parseDion(input: String): List<String> {
+        val out = LinkedHashSet<String>()
+        for (raw in input.split(',', ';', '\n', '\r', '\t', ' ')) {
+            val s = raw.trim()
+            if (s.isEmpty()) continue
+            normalize(s)?.takeIf { isDion(it) }?.let { out.add(it); continue }
+            val path = s.substringAfter("://", s).substringBefore('?').substringBefore('#')
+            val seg = path.split('/').drop(if (s.contains("://") || s.contains('.')) 1 else 0)
+                .lastOrNull { it.isNotBlank() } ?: continue
+            if (Regex("^[A-Za-z0-9][A-Za-z0-9_-]{2,127}$").matches(seg)) out.add(DION_PREFIX + seg)
+        }
+        return out.toList()
+    }
+
     /** Dion — основное звено СЕЙЧАС: выбрано и есть живая комната. */
     fun effectivePrimaryDion(): Boolean = primaryDion.value && dionRooms().isNotEmpty()
 
@@ -171,15 +193,19 @@ object HashStore {
      * мёртвые — DION основным нельзя.
      */
     fun setPrimaryDion(on: Boolean): String {
-        if (on) {
-            if (items.none { isDion(it.hash) }) return "Сначала добавьте комнату DION"
-            if (dionRooms().isEmpty()) return "Основным DION нельзя: все комнаты мёртвые"
-        }
+        // ВКЛАДКУ МОЖНО ВЫБРАТЬ И БЕЗ КОМНАТ (владелец 06.10): раньше без
+        // комнаты DION не переключался, а комнату добавляют как раз на этой
+        // вкладке — замкнутый круг. Пока живой комнаты нет, движок всё
+        // равно идёт через VK (effectivePrimaryDion), а человеку подсказка.
         primaryDion.value = on
         try {
             appCtx?.getSharedPreferences(PREFS, Context.MODE_PRIVATE)?.edit()?.putBoolean(K_PRIMARY, on)?.apply()
         } catch (e: Throwable) { }
-        return ""
+        return when {
+            on && items.none { isDion(it.hash) } -> "Вставьте ссылку на комнату DION и нажмите «Добавить»"
+            on && dionRooms().isEmpty() -> "Все комнаты DION мёртвые — пока работает VK"
+            else -> ""
+        }
     }
 
     fun remove(hash: String) {

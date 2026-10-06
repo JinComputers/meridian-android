@@ -74,7 +74,7 @@ fun HashScreen(modifier: Modifier = Modifier, onBack: () -> Unit) {
         // ПЕРЕКЛЮЧАТЕЛЬ ОСНОВНОГО ЗВЕНА (эталон — Mac): «VK | DION», сегментами
         // на всю ширину. Выбранная половина залита акцентом, невыбранная прозрачная.
         Text("Транспорт обхода белых списков", color = Brand.dim, fontSize = 13.sp)
-        val primaryDion = HashStore.effectivePrimaryDion()
+        val primaryDion = HashStore.primaryDion.value
         GlassSegmented(
             options = listOf("VK", "DION"),
             selected = if (primaryDion) 1 else 0,
@@ -87,8 +87,10 @@ fun HashScreen(modifier: Modifier = Modifier, onBack: () -> Unit) {
             onValueChange = { input = it },
             modifier = Modifier.fillMaxWidth(),
             enabled = !busy,
-            label = { Text("Ссылка на звонок") },
-            placeholder = { Text("https://vk.com/call/join/… или https://dion.vc/event/…") },
+            label = { Text(if (primaryDion) "Ссылка на комнату DION" else "Ссылка на звонок") },
+            placeholder = {
+                Text(if (primaryDion) "https://dion.vc/event/…" else "https://vk.com/call/join/…")
+            },
         )
 
         // ПОДПИСЬ ЗДЕСЬ НУЖНА, и это осознанное исключение из правила
@@ -106,7 +108,7 @@ fun HashScreen(modifier: Modifier = Modifier, onBack: () -> Unit) {
             enabled = !busy && (input.isNotBlank() || HashStore.items.isNotEmpty()),
             onClick = {
                 if (input.isNotBlank()) {
-                    note = HashStore.add(input)
+                    note = HashStore.add(input, asDion = primaryDion)
                     input = ""
                 } else {
                     busy = true
