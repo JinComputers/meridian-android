@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Meridian — главный экран (образец)</title>
+<link rel="stylesheet" href="tokens.css">
+<style>
+  /* Главный экран: колонка, планета по центру по вертикали (равные
+     распорки сверху и снизу), шестерёнка внизу по центру. */
+  .screen {
+    box-sizing: border-box;
+    width: 380px; height: 640px;            /* окно-образец; размер окна — на усмотрение клиента */
+    margin: 24px auto;
+    padding: var(--m-pad-screen);
+    display: flex; flex-direction: column; gap: var(--m-gap-main);
+    border: 1px solid #111;                  /* только для образца */
+  }
+  .grow { flex: 1; }
+  .center { display: flex; justify-content: center; }
+  .access { display: flex; flex-direction: column; gap: var(--m-gap-block); }
+  .gear { width: var(--m-icon); height: var(--m-icon); cursor: pointer; }
+  .demo { text-align: center; font-size: 12px; color: var(--m-dim); }
+  .demo button { margin: 0 4px; }
+</style>
+</head>
+<body>
+  <div class="demo">
+    Образец состояний:
+    <button onclick="show('off')">выключено</button>
+    <button onclick="show('busy')">подключение</button>
+    <button onclick="show('connected')">подключено</button>
+    <button onclick="show('error')">ошибка</button>
+    <button onclick="show('noaccess')">нет доступа</button>
+  </div>
+
+  <div class="screen">
+    <div class="grow"></div>
+    <div class="center"><canvas id="planet"></canvas></div>
+    <div class="access" id="access"></div>
+    <div class="m-notice" id="notice"></div>
+    <div class="grow"></div>
+    <div class="center"><img class="gear" src="icons/gear.svg" alt="Настройки" title="Настройки"></div>
+  </div>
+
+<script src="planet.js"></script>
+<script>
+  const planet = new MeridianPlanet(document.getElementById('planet'), 220);
+  const notice = document.getElementById('notice');
+  const access = document.getElementById('access');
+  let state = 'off';
+
+  // Нажатие на планету: выключено → подключение, подключение → остановить,
+  // подключено → отключить. Без доступа не нажимается.
+  document.getElementById('planet').addEventListener('click', () => {
+    if (!planet.enabled) return;
+    show(state === 'off' || state === 'error' ? 'busy' : 'off');
+  });
+
+  function show(s) {
+    state = s;
+    access.innerHTML = '';
+    notice.textContent = '';
+    notice.className = 'm-notice';
+    planet.setEnabled(true);
+    if (s === 'error') {
+      planet.setState('off');
+      notice.className = 'm-notice bad';
+      notice.textContent = 'Сервер недоступен из этой сети напрямую — похоже, оператор включил белые списки. ' +
+        'Обход через ВК-звонок не настроен: добавьте ссылку на звонок ВКонтакте в «Настройки → Обход белых списков»';
+    } else if (s === 'noaccess') {
+      planet.setState('off');
+      planet.setEnabled(false);
+      access.innerHTML =
+        '<button class="m-button">Начать 3 дня бесплатно</button>' +
+        '<button class="m-button">Купить ключ</button>' +
+        '<button class="m-text-button">Уже есть ключ?</button>';
+    } else {
+      planet.setState(s);
+    }
+  }
+  show('off');
+</script>
+</body>
+</html>

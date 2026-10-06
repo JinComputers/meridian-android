@@ -1,0 +1,6 @@
+<!-- Логи (LogIcon), поле 40×40, цвет Brand.edge. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" width="40" height="40" fill="none" stroke="#6F98FF" stroke-width="2.704" stroke-linecap="round">
+  <line x1="9.6" y1="13.76" x2="30.4" y2="13.76"/>
+  <line x1="9.6" y1="20" x2="30.4" y2="20"/>
+  <line x1="9.6" y1="26.24" x2="23.12" y2="26.24"/>
+</svg>

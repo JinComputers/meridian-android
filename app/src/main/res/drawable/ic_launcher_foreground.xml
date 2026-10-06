@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Сфера из логотипа для значка приложения.
+
+    Поле 108×108 — как требует адаптивный значок. Сфера радиусом 30 в
+    центре: безопасная зона у адаптивного значка это круг диаметром 66,
+    то есть радиус 33, и 30 укладывается в неё с запасом на обрезку
+    любой формы, которую выберет лаунчер.
+
+    Меридианы стоят там же, где в логотипе: разбор пикселей дал
+    пересечения на 0.29 и 0.62 радиуса от центра, отсюда 8.7 и 18.6.
+
+    Обводка толще, чем в исходном файле (2.0 против примерно 0.9 в
+    пересчёте). На значке в 48dp тонкая линия исчезает совсем, а от
+    сферы только контур и остаётся.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Тело сферы. -->
+    <path
+        android:fillColor="@color/brand_sphere"
+        android:pathData="M54,24 a30,30 0 1,0 0,60 a30,30 0 1,0 0,-60z" />
+
+    <!-- Меридианы. -->
+    <path
+        android:strokeColor="@color/brand_meridian"
+        android:strokeWidth="1.1"
+        android:fillColor="#00000000"
+        android:pathData="M54,24 a8.7,30 0 1,0 0,60 a8.7,30 0 1,0 0,-60z" />
+    <path
+        android:strokeColor="@color/brand_meridian"
+        android:strokeWidth="1.1"
+        android:fillColor="#00000000"
+        android:pathData="M54,24 a18.6,30 0 1,0 0,60 a18.6,30 0 1,0 0,-60z" />
+
+    <!-- Контур. -->
+    <path
+        android:strokeColor="@color/brand_edge"
+        android:strokeWidth="2.0"
+        android:fillColor="#00000000"
+        android:pathData="M54,24 a30,30 0 1,0 0,60 a30,30 0 1,0 0,-60z" />
+
+    <!-- Точки на полюсах. -->
+    <path
+        android:fillColor="@color/brand_edge"
+        android:pathData="M54,20.8 a3.2,3.2 0 1,0 0,6.4 a3.2,3.2 0 1,0 0,-6.4z" />
+    <path
+        android:fillColor="@color/brand_edge"
+        android:pathData="M54,80.8 a3.2,3.2 0 1,0 0,6.4 a3.2,3.2 0 1,0 0,-6.4z" />
+</vector>
