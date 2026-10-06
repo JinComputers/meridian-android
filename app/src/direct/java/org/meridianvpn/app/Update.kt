@@ -481,13 +481,14 @@ object Update {
      * транспорте, а на sha256 из описания, сверяемом до установки; адрес
      * 10.77.77.1 достижим только изнутри нашего туннеля.
      */
-    private fun tunnelGet(path: String): Pair<java.io.InputStream, java.net.Socket> {
+    private fun tunnelGet(path: String, from: Long = 0): Pair<java.io.InputStream, java.net.Socket> {
         val s = java.net.Socket()
         try {
             s.connect(java.net.InetSocketAddress(TUNNEL_HOST, TUNNEL_PORT), CHECK_CONNECT_MS)
             s.soTimeout = READ_MS
             s.getOutputStream().write(
-                "GET $path HTTP/1.0\r\nHost: $TUNNEL_HOST\r\nUser-Agent: meridian-app\r\n\r\n"
+                ("GET $path HTTP/1.0\r\nHost: $TUNNEL_HOST\r\nUser-Agent: meridian-app\r\n" +
+                    (if (from > 0) "Range: bytes=$from-\r\n" else "") + "\r\n")
                     .toByteArray(Charsets.US_ASCII)
             )
             val input = java.io.BufferedInputStream(s.getInputStream())
@@ -502,7 +503,8 @@ object Update {
                 return b.toString("US-ASCII")
             }
             val status = line()
-            if (status.split(' ').getOrNull(1) != "200") {
+            val st = status.split(' ').getOrNull(1)
+            if (st != "200" && !(from > 0 && st == "206")) {
                 throw IllegalStateException("туннель: ответ «${status.take(40)}»")
             }
             while (line().isNotEmpty()) { /* заголовки не нужны */ }
@@ -670,7 +672,7 @@ object Update {
     private fun isCheckThread(): Boolean =
         Thread.currentThread().name == "meridian-update-check"
 
-    private fun open(url: String, accept: String, auth: Boolean): HttpURLConnection {
+    private fun open(url: String, accept: String, auth: Boolean, from: Long = 0): HttpURLConnection {
         var current = url
         var carry = auth
         repeat(5) {
@@ -686,6 +688,7 @@ object Update {
             // незачем: строка ничего не стоит и ни о чём не говорит
             // постороннему.
             c.setRequestProperty("User-Agent", "meridian-app")
+            if (from > 0) c.setRequestProperty("Range", "bytes=$from-")
             if (carry) token()?.let { c.setRequestProperty("Authorization", "Bearer $it") }
             val code = c.responseCode
             if (code in 301..308) {
@@ -696,7 +699,7 @@ object Update {
                 carry = false
                 return@repeat
             }
-            if (code != 200) {
+            if (code != 200 && !(from > 0 && code == 206)) {
                 // ПРИЧИНУ ГОВОРИТ САМ GITHUB, и она в теле ответа.
                 //
                 // Раньше мы это тело выбрасывали и писали свой домысел
@@ -827,69 +830,110 @@ object Update {
     private fun fetchApk(ctx: Context, info: Info): File {
         val part = File(dir(ctx), "meridian-${info.code}.part")
         part.delete()
-        // Закрытый репозиторий отдаёт вложение только по идентификатору
-        // и только с токеном; открытый — прямым адресом из описания.
-        if (info.url.startsWith(TUNNEL_URL)) {
-            TunnelLog.add("обновление: качаю через туннель")
-            val (input, s) = tunnelGet(TUNNEL_DIR + info.url.substringAfterLast('/'))
-            try {
-                return saveVerified(ctx, part, input, info)
-            } finally {
-                s.close()
+        val name = info.url.substringAfterLast('/')
+
+        // ИСТОЧНИКИ ПО ОЧЕРЕДИ, С ДОКАЧКОЙ (жалоба клиента 06.10: из приложения
+        // в разы медленнее браузера и пару раз срыв). Раньше первым шло наше
+        // зеркало — один поток с машины API, — а срыв начинал всё с нуля.
+        // Теперь первым GitHub (тот же CDN, что у браузера), потом зеркало;
+        // оборвалось — следующая попытка докачивает с места обрыва (Range).
+        class Src(val label: String, val get: (Long) -> Pair<java.io.InputStream, () -> Unit>?)
+        val http = { c: HttpURLConnection? ->
+            c?.let { conn -> conn.inputStream to { conn.disconnect() } }
+        }
+        val sources = ArrayList<Src>()
+        when {
+            info.url.startsWith(TUNNEL_URL) -> sources += Src("через туннель") { from ->
+                val (input, s) = tunnelGet(TUNNEL_DIR + name, from)
+                input to { s.close() }
+            }
+            updatePrivate() -> sources += Src("с GitHub") { from ->
+                http(open(apiAssetUrl(assetId(name)), "application/octet-stream", auth = true, from = from))
+            }
+            else -> {
+                sources += Src("с GitHub") { from ->
+                    http(open(info.url, "application/octet-stream", auth = false, from = from))
+                }
+                sources += Src("с зеркала") { from ->
+                    http(ApiClient.openMirror(MIRROR_PATH + name, "application/octet-stream",
+                        CONNECT_MS, READ_MS, from))
+                }
             }
         }
-        val mirror = if (updatePrivate()) null else
-            ApiClient.openMirror(MIRROR_PATH + info.url.substringAfterLast('/'),
-                "application/octet-stream", CONNECT_MS, READ_MS)
-        if (mirror != null) TunnelLog.add("обновление: качаю с зеркала")
-        val c = if (mirror != null) {
-            mirror
-        } else if (updatePrivate()) {
-            val name = info.url.substringAfterLast('/')
-            open(apiAssetUrl(assetId(name)), "application/octet-stream", auth = true)
-        } else {
-            open(info.url, "application/octet-stream", auth = false)
+
+        var lastErr: Throwable? = null
+        for (attempt in 0 until DOWNLOAD_ATTEMPTS) {
+            val src = sources[attempt % sources.size]
+            val from = if (part.exists()) part.length() else 0L
+            if (from >= info.size) break
+            try {
+                val got = src.get(from) ?: throw IllegalStateException("не ответил")
+                TunnelLog.add("обновление: качаю ${src.label}" + if (from > 0) " с ${from / 1024} КБ" else "")
+                try {
+                    appendStream(part, got.first, from, info.size)
+                } finally {
+                    try { got.second() } catch (x: Throwable) { }
+                }
+                if (part.length() >= info.size) break
+            } catch (e: Throwable) {
+                lastErr = e
+                TunnelLog.add("обновление: ${src.label} оборвалось на ${part.length() / 1024} КБ (${e.message})")
+            }
         }
-        try {
-            return c.inputStream.use { input -> saveVerified(ctx, part, input, info) }
-        } finally {
-            c.disconnect()
+        if (part.length() != info.size) {
+            part.delete()
+            throw IllegalStateException(lastErr?.message ?: "скачалось не целиком")
+        }
+        return verifyPart(ctx, part, info)
+    }
+
+    private const val DOWNLOAD_ATTEMPTS = 6
+
+    /**
+     * Дописывает поток в файл с позиции from. Потолок по размеру: иначе
+     * подменённый ответ может забить кэш телефона целиком.
+     */
+    private fun appendStream(part: File, input: java.io.InputStream, from: Long, size: Long) {
+        java.io.RandomAccessFile(part, "rw").use { f ->
+            f.seek(from)
+            val buf = ByteArray(64 * 1024)
+            var pos = from
+            try {
+                while (true) {
+                    val n = input.read(buf)
+                    if (n <= 0) break
+                    f.write(buf, 0, n)
+                    pos += n
+                    if (pos > size) throw IllegalStateException("сборка больше заявленной")
+                    val done = pos
+                    post { gotBytes.value = done }
+                }
+            } finally {
+                f.setLength(pos)
+            }
         }
     }
 
-    /** Пишет поток во временный файл, считая хеш; годный — переименовывает. */
-    private fun saveVerified(ctx: Context, part: File, input0: java.io.InputStream, info: Info): File {
-        run {
-            val digest = MessageDigest.getInstance("SHA-256")
-            var got = 0L
-            input0.let { input ->
-                part.outputStream().use { out ->
-                    val buf = ByteArray(64 * 1024)
-                    while (true) {
-                        val n = input.read(buf)
-                        if (n <= 0) break
-                        out.write(buf, 0, n)
-                        digest.update(buf, 0, n)
-                        got += n
-                        // Потолок по размеру: иначе подменённый ответ
-                        // может забить кэш телефона целиком.
-                        if (got > info.size) throw IllegalStateException("сборка больше заявленной")
-                        val done = got
-                        post { gotBytes.value = done }
-                    }
-                }
+    /** Сумма файла целиком против описания; годный — переименовываем. */
+    private fun verifyPart(ctx: Context, part: File, info: Info): File {
+        val digest = MessageDigest.getInstance("SHA-256")
+        part.inputStream().use { input ->
+            val buf = ByteArray(64 * 1024)
+            while (true) {
+                val n = input.read(buf)
+                if (n <= 0) break
+                digest.update(buf, 0, n)
             }
-            if (got != info.size) throw IllegalStateException("скачалось не целиком")
-            val sum = digest.digest().joinToString("") { "%02x".format(it) }
-            if (sum != info.sha256) {
-                part.delete()
-                throw IllegalStateException("сборка не совпала с описанием")
-            }
-            val done = File(dir(ctx), "meridian-${info.code}.apk")
-            done.delete()
-            if (!part.renameTo(done)) throw IllegalStateException("файл не переименовался")
-            return done
         }
+        val sum = digest.digest().joinToString("") { "%02x".format(it) }
+        if (sum != info.sha256) {
+            part.delete()
+            throw IllegalStateException("сборка не совпала с описанием")
+        }
+        val done = File(dir(ctx), "meridian-${info.code}.apk")
+        done.delete()
+        if (!part.renameTo(done)) throw IllegalStateException("файл не переименовался")
+        return done
     }
 
     // ------------------------------------------------------------------

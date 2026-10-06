@@ -327,7 +327,7 @@ object ApiClient {
      * адрес, ответивший 200, и есть ответ; остальные коды — следующий адрес.
      * null — не ответил никто. ЗВАТЬ ТОЛЬКО С ФОНОВОГО ПОТОКА.
      */
-    fun openMirror(path: String, accept: String, connectMs: Int, readMs: Int): HttpsURLConnection? {
+    fun openMirror(path: String, accept: String, connectMs: Int, readMs: Int, from: Long = 0): HttpsURLConnection? {
         if (Looper.myLooper() == Looper.getMainLooper()) {
             throw IllegalStateException("ApiClient.openMirror с главного потока")
         }
@@ -346,8 +346,9 @@ object ApiClient {
                 conn.readTimeout = readMs
                 conn.useCaches = false
                 conn.setRequestProperty("Accept", accept)
+                if (from > 0) conn.setRequestProperty("Range", "bytes=$from-")
                 val code = conn.responseCode
-                if (code == 200) {
+                if (code == 200 || (from > 0 && code == 206)) {
                     TunnelLog.add("зеркало: ${addr.host} ответил за ${System.currentTimeMillis() - t0} мс")
                     rememberGood(addr.host)
                     return conn
